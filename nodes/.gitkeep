@@ -1,0 +1,3 @@
+# Node directories (nodes/<slug>/) are scaffolded here by /bootstrap-node or
+# /onboard-node. The per-node layout is the conventions skill's
+# references/node-profile.md.

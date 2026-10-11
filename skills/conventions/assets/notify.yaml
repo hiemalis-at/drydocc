@@ -1,0 +1,39 @@
+# Fork-wide notification routing. Optional — with no nodes/notify.yaml, no node
+# sends anything and every timer runs exactly as it would without it.
+# Overridden per node by nodes/<node>/notify.yaml. See
+# ../references/notify-manifest.md.
+#
+# No secret values here: topic names and the token are credentials (anyone who
+# knows a topic on a public server can read and publish to it), so this file
+# names only the environment variables that hold them.
+schema: 1
+
+channel: ntfy
+server: https://ntfy.sh
+audiences:
+  admin:
+    topic_env: DOCCAP_NTFY_ADMIN_TOPIC
+  agent:
+    topic_env: DOCCAP_NTFY_AGENT_TOPIC
+heartbeat:
+  grace: 2h
+  rearm_every: 6h
+events:
+  - id: run-missed
+    to: [admin]
+    priority: 5
+  - id: run-failed
+    to: [admin, agent]
+    priority: 4
+  - id: telemetry-anomaly
+    to: [admin, agent]
+    priority: 4
+  - id: maintenance-drift
+    to: [agent]
+    priority: 3
+  - id: admin-attention
+    to: [admin]
+    priority: 4
+  - id: test
+    to: [admin, agent]
+    priority: 3

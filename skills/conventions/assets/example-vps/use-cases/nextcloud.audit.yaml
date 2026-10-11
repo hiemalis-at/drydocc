@@ -1,0 +1,59 @@
+# Audit manifest for the nextcloud use-case. Optional — the universal
+# declared-vs-live checks in /audit-use-case run without it. See
+# ../../../references/audit-manifest.md for the schema.
+use_case: nextcloud
+schema: 1
+
+# ─── authored by /create-use-case + /modify-use-case; safe to hand-edit ───
+
+expectations:
+  - id: install-healthy
+    description: Nextcloud reports a completed, non-maintenance install
+    probe: podman exec nextcloud-app php occ status --output=json
+    expect: stdout-json:installed=true
+    severity: critical
+  - id: turn-port-listening
+    description: eturnal is actually bound on 3478/udp
+    probe: ss -ulnH sport = :3478
+    expect: stdout-contains:3478
+    severity: warn
+
+config_surfaces:
+  - volume: nextcloud-data
+    path: config/config.php
+    kind: app-config
+    note: >-
+      Written by the Nextcloud admin UI and by `occ config:system:set`.
+      trusted_domains and the TURN shared-secret binding land here, so a
+      rebuild without this file loses external access configuration.
+  - volume: nextcloud-data
+    path: apps/
+    kind: plugin-state
+    note: >-
+      Apps installed through the in-app App Store. Not expressible in spec:;
+      re-installing them by hand after a rebuild is the recovery cost.
+
+ignore:
+  - volume: nextcloud-data
+    path: data/appdata_*/
+  - volume: nextcloud-data
+    path: data/*/cache/
+
+telemetry:
+  # ─── authored; every field optional ───
+  # nextcloud's weekly full file rescan is known load, not an anomaly.
+  # (Its backup window is excluded automatically from nextcloud.backup.yaml.)
+  exclude_windows:
+    - on: "Sun *-*-* 02:00"
+      for: 2h
+      note: weekly occ files:scan rescans every user's data
+
+  # ─── written by /node-maintenance; do not hand-edit ───
+  last_evaluated: null
+  baseline: null
+
+# ─── written by /audit-use-case; do not hand-edit ───
+
+last_audited: null
+last_audited_commit: null
+fingerprints: {}

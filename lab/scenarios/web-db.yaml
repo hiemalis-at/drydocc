@@ -1,0 +1,56 @@
+# A two-container use-case — a database and a web UI that depends on it — with
+# a persistent volume and a secret, created and applied unattended. Proves
+# ordering, volume creation, and secret delivery from the environment.
+# Schema: skills/conventions/references/lab-scenario.md
+scenario: web-db
+description: a database plus a dependent web UI, with a volume and a generated secret
+tailnet: off
+nodes:
+  app:
+    from: commissioned
+    distro: fedora
+    version: "44"
+answers:
+  create-use-case.continue-over-ssh: "yes"
+  apply-use-case.continue-over-ssh: "yes"
+  apply-use-case.confirm-render: "yes"
+secrets: [POSTGRES_PASSWORD]
+steps:
+  - name: create and apply the db + web pair
+    agent: >-
+      /create-use-case app dbadmin "Two containers on one private network.
+      Container db from the image docker.io/library/postgres:16.4-alpine, with
+      one volume named pgdata mounted at /var/lib/postgresql/data and the
+      secret POSTGRES_PASSWORD (already in the environment), no published
+      ports. Container ui from the image docker.io/library/adminer:4.8.1,
+      which depends on db, publishing container port 8080 on host port
+      8081/tcp, with ADMINER_DEFAULT_SERVER set to db. No config surfaces."
+    node: app
+    timeout: 3000
+  - name: the use-case is active
+    assert: use_case
+    node: app
+    slug: dbadmin
+  - name: both containers run
+    assert: command
+    node: app
+    run: test "$(systemctl --user list-units --type=service --state=running --no-legend | grep -c dbadmin)" -ge 2
+  - name: the database was initialised on its volume
+    assert: command
+    node: app
+    run: sudo test -f /var/lib/drydocc/volumes/dbadmin/pgdata/PG_VERSION
+  - name: the secret landed only in the node's env file
+    assert: command
+    node: app
+    run: sudo grep -q '^POSTGRES_PASSWORD=.' /etc/drydocc/secrets/dbadmin.env && test "$(sudo stat -c %a /etc/drydocc/secrets/dbadmin.env)" = 600
+  - name: the web UI answers on the node
+    assert: http
+    node: app
+    url: http://127.0.0.1:8081/
+    contains: "Adminer"
+  - name: the apply is journaled
+    assert: journal_entry
+    node: app
+    trigger_contains: apply-use-case
+  - name: the framework checks still pass on the fork
+    assert: checks_pass

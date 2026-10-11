@@ -1,0 +1,28 @@
+# Node-level deviation from ../maintenance.yaml for example-vps.
+# Merge rule: same `id` overrides field-by-field; an id absent from both layers
+# defaults to `mode: report`. See ../../references/maintenance-manifest.md.
+node: vps-fra-01
+schema: 1
+
+# This node runs its sweep later than the fork-wide 04:30 — its backup timer
+# holds the volumes at 03:30 and a stop-consistency snapshot can overrun.
+schedule: "05:15"
+
+posture:
+  # Promoted to unattended after one watched interactive success; the id is
+  # listed in verified_auto below, which is what makes `auto` legal here.
+  - id: logs-bounded
+    mode: auto
+
+  # A deliberate exception, with its reason recorded. Without the note this is
+  # indistinguishable from an oversight a year from now.
+  - id: credentials-within-rotation-window
+    mode: off
+    note: "credentials for this node are reviewed in the quarterly access audit, not per-sweep"
+
+# ─── written by /node-maintenance; do not hand-edit ───
+
+automation_rendered_commit: 0000000
+last_maintenance: 2026-09-12T04:31:00Z
+last_maintenance_outcome: partial
+verified_auto: [logs-bounded]

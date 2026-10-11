@@ -1,0 +1,33 @@
+# Fork-wide backup targets. Extended/overridden per node by
+# nodes/<node>/backup-targets.yaml. See ../references/backup-targets.md.
+schema: 1
+targets:
+  - name: nas-primary
+    type: rsync
+    default: true
+    host: nas.example.ts.net
+    port: 22
+    user: doccap-backup
+    root: /backups/drydocc
+    ssh_key_name: doccap-backup-at-nas-primary
+    ssh_key_fingerprint: "SHA256:EXAMPLEbackupKeyFingerprintGoesHere0123456789"
+
+  - name: cold-s3
+    type: s3
+    default: false
+    endpoint: https://s3.example-provider.com
+    bucket: drydocc-backups
+    root: prod
+    force_path_style: false
+    keepass_entry: "drydocc/example-vps/backup-cold-s3"
+    target_path: /etc/drydocc/secrets/backup-cold-s3.env
+    keys:
+      - name: S3_ACCESS_KEY_ID
+        purpose: object storage access key id
+        rotates: yearly
+      - name: S3_SECRET_ACCESS_KEY
+        purpose: object storage secret key
+        rotates: yearly
+      - name: BACKUP_ENCRYPTION_PASSPHRASE
+        purpose: symmetric passphrase encrypting every snapshot before upload
+        rotates: never

@@ -1,0 +1,57 @@
+name: example-vps
+distro: debian
+distro_version: "12"
+arch: x86_64                   # verbatim `uname -m`, never normalised
+system_facts:
+  package_manager: apt
+  service_manager: systemd
+  container_engine: podman
+  mac_framework: none
+  firewall:
+    tool: ufw
+    rule_model: rule-list
+    tag_mechanism: comment
+  rootless_ready: true
+  capabilities:
+    python3: present
+    rsync: present
+    tmux: present
+  detected: 2026-05-18
+identity:
+  machine_id_hash: "sha256:EXAMPLEmachineIdHashGoesHere0123456789abcdef0123456789abcdef01"
+  host_key_fingerprint: "SHA256:Kt4Ym9qeXAMPLEhostKeyFingerprintGoesHere012345678"
+  first_seen: 2026-05-18
+hostname: example-vps
+doccap_user: doccap
+ssh_fallback_port: 42022
+tailscale_hostname: example-vps
+roles: [edge, web]
+provisioning:
+  source: running
+ssh:
+  server: openssh
+  config_include_dir: /etc/ssh/sshd_config.d
+  effective_config_cmd: "sshd -T"
+  key_name: doccap-at-example-vps
+  key_algorithm: ed25519
+  key_source: generated
+  public_key_fingerprint: "SHA256:Hn7Xb3p0eXAMPLEfingerprintValueGoesHere0123456789"
+hardening:
+  firewall: enabled
+  fail2ban: enabled
+  ssh_root_login: disabled
+  ssh_password_auth: disabled
+  tailscale: joined
+remote_ide:
+  vscode_server: compatible
+  reason: ""
+  probed: 2026-05-18
+secrets:
+  required_env:
+    - name: DOCCAP_TS_KEY
+      purpose: tailscale auth key for tailnet join
+      phase: bootstrap
+      keepass_entry: "drydocc/tailscale"
+      optional: false
+created: 2026-05-18
+last_bootstrapped: 2026-05-18T14:22:00Z

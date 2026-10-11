@@ -1,0 +1,44 @@
+# A single-container use-case, created and applied unattended on a commissioned
+# node — the smallest end-to-end proof that the use-case lifecycle works.
+# Schema: skills/conventions/references/lab-scenario.md
+scenario: whoami-smoke
+description: create and apply a one-container use-case on a commissioned node, then prove it serves
+tailnet: off
+nodes:
+  web:
+    from: commissioned
+    distro: fedora
+    version: "44"
+answers:
+  create-use-case.continue-over-ssh: "yes"
+  apply-use-case.continue-over-ssh: "yes"
+  apply-use-case.confirm-render: "yes"
+steps:
+  - name: create and apply whoami
+    agent: >-
+      /create-use-case web whoami "One container, named whoami, from the image
+      docker.io/traefik/whoami:v1.10.3, publishing container port 80 on host
+      port 8080/tcp. No volumes, no secrets, no dependencies, no config
+      surfaces. It answers HTTP requests by echoing the request details."
+    node: web
+    timeout: 2400
+  - name: the use-case is active
+    assert: use_case
+    node: web
+    slug: whoami
+  - name: its service runs
+    assert: command
+    node: web
+    # the container's own unit — not the quadlet network unit, which is "active (exited)"
+    run: systemctl --user list-units --type=service --state=running --no-legend | grep whoami
+  - name: it answers on the node
+    assert: http
+    node: web
+    url: http://127.0.0.1:8080/
+    contains: "Hostname:"
+  - name: the apply is journaled
+    assert: journal_entry
+    node: web
+    trigger_contains: apply-use-case
+  - name: the framework checks still pass on the fork
+    assert: checks_pass

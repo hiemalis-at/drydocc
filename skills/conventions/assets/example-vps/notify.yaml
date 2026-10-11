@@ -1,0 +1,18 @@
+# Node-level deviation from ../notify.yaml for example-vps.
+# Merge rule: scalars override field-by-field; events match on `id`.
+# See ../../references/notify-manifest.md.
+node: vps-fra-01
+schema: 1
+
+events:
+  # A production box: drift found by the unattended sweep is worth a push, not
+  # just a line for the next agent session.
+  - id: maintenance-drift
+    to: [admin, agent]
+    note: "production box — drift is worth a push"
+
+# ─── written by /node-notify; do not hand-edit ───
+
+helper_rendered_commit: 0000000
+last_test: 2026-09-12T09:02:00Z
+last_test_outcome: success

@@ -1,0 +1,60 @@
+# Second worked example. Its only purpose is to show that a node whose tooling
+# nobody wrote a recipe for is fully representable — no schema change, no edit
+# to the generic layer. Compare field-by-field with example-vps/node.yaml.
+name: example-sbc
+distro: opensuse-leap          # recorded, never branched on
+distro_version: "15.6"
+arch: aarch64                  # verbatim `uname -m`
+system_facts:
+  package_manager: zypper      # not one of the values the recipes were written against
+  service_manager: systemd     # the one hard requirement — quadlets are systemd
+  container_engine: podman
+  mac_framework: apparmor
+  firewall:
+    tool: firewalld
+    rule_model: zone           # rules attach to a zone, not a flat list
+    tag_mechanism: log-prefix  # no comment attribute; the tag rides a log prefix
+  rootless_ready: true
+  capabilities:
+    python3: present
+    rsync: absent              # /apply-use-case adoption cut-over needs this installed first
+    tmux: absent               # node-exec falls back to its nohup form
+  detected: 2026-08-07
+identity:
+  machine_id_hash: "sha256:EXAMPLEsbcMachineIdHash0123456789abcdef0123456789abcdef0123"
+  host_key_fingerprint: "SHA256:Qz8Rv2wEXAMPLEsbcHostKeyFingerprint0123456789abc"
+  first_seen: 2026-08-07
+hostname: example-sbc
+doccap_user: doccap
+ssh_fallback_port: 42022
+tailscale_hostname: example-sbc
+roles: [home, sensors]
+provisioning:
+  source: running
+ssh:
+  server: openssh
+  config_include_dir: null     # no drop-in dir here: config is edited in place
+  effective_config_cmd: "sshd -T"
+  key_name: doccap-at-example-sbc
+  key_algorithm: ed25519
+  key_source: generated
+  public_key_fingerprint: "SHA256:Lp3Kd9zEXAMPLEsbcClientKeyFingerprint01234567890"
+hardening:
+  firewall: enabled
+  fail2ban: enabled
+  ssh_root_login: disabled
+  ssh_password_auth: disabled
+  tailscale: joined
+remote_ide:
+  vscode_server: unknown
+  reason: ""
+  probed: null
+secrets:
+  required_env:
+    - name: DOCCAP_TS_KEY
+      purpose: tailscale auth key for tailnet join
+      phase: bootstrap
+      keepass_entry: "drydocc/tailscale"
+      optional: false
+created: 2026-08-07
+last_bootstrapped: 2026-08-07T09:14:00Z

@@ -1,0 +1,37 @@
+# Backup manifest for the nextcloud use-case. Optional — see
+# ../../../references/backup-manifest.md for the schema.
+use_case: nextcloud
+schema: 1
+
+# ─── authored by /backup-use-case (setup) and admin tuning; safe to hand-edit ───
+
+target: nas-primary
+schedule: "03:30"
+retention:
+  keep: 14
+consistency: stop
+volumes:
+  - name: nextcloud-data
+    exclude: ["appdata_*/", "*/cache/"]
+  - name: nextcloud-db-data
+    exclude: []
+hooks:
+  pre_backup:
+    - container: nextcloud-db
+      command: >-
+        pg_dump -U nextcloud -Fc nextcloud
+        > /var/lib/postgresql/data/backup/nextcloud.dump
+  post_restore:
+    - container: nextcloud-db
+      command: >-
+        pg_restore -U nextcloud -d nextcloud --clean --if-exists
+        /var/lib/postgresql/data/backup/nextcloud.dump
+
+# ─── written by /backup-use-case / /restore-use-case; do not hand-edit ───
+
+automation_rendered_commit: null
+last_backup: null
+last_backup_outcome: null
+last_snapshot: null
+last_restore_test: null
+last_restore_test_snapshot: null

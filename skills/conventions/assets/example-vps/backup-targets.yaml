@@ -1,0 +1,20 @@
+# Node-level override/extension of ../backup-targets.yaml for example-vps.
+# Merge rule: same `name` overrides field-by-field; a new `name` is added.
+# See ../../references/backup-targets.md.
+schema: 1
+targets:
+  # Overrides the fork-wide "nas-primary" root for this node only — every
+  # other field (host, port, user, ssh_key_name) is inherited unchanged.
+  - name: nas-primary
+    root: /backups/drydocc/example-vps
+
+  # A target that exists only for this node.
+  - name: local-fast-nas
+    type: rsync
+    default: false
+    host: nas-rack3.example.ts.net
+    port: 22
+    user: doccap-backup
+    root: /srv/backups/example-vps
+    ssh_key_name: doccap-backup-at-local-fast-nas
+    ssh_key_fingerprint: "SHA256:EXAMPLElocalNasKeyFingerprint0123456789abcdef"

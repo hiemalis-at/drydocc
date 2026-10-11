@@ -1,0 +1,33 @@
+# drydocc — local agent state, never commit
+# /continue-last-command resume pointer, lab overlay
+.drydocc/
+# Local permission allowlist — machine-specific, not fork policy
+# (git never traverses the .claude/.vibe symlinks, so these must be
+# spelled relative to the real .agents/ path to have any effect)
+.agents/settings.json
+.agents/settings.local.json
+
+# Node-local state that must never reach git
+**/secrets/*.env
+*.secrets.local.yaml
+# The secrets fallback file the admin pastes values into
+/.env
+
+# /lab run and promote worktrees
+.worktrees/
+
+# VM provisioning: server images are large; rendered
+# preseed/kickstart seeds embed the initial root password — never commit
+iso/
+*.iso
+.bootstrap-tmp/
+
+# Editor
+.vscode/
+*.swp
+.DS_Store
+
+# Python
+__pycache__/
+*.pyc
+.venv/

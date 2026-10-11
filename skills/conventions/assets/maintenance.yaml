@@ -1,0 +1,34 @@
+# Fork-wide maintenance posture — the bar every node in this infrastructure is
+# held to. Deviated from per node by nodes/<node>/maintenance.yaml, and every
+# deviation is reported on every run. See ../references/maintenance-manifest.md.
+#
+# `mode: report` is the safe default: assess and report, act only with an admin
+# present. Setting `auto` here expresses intent; each node still refuses until
+# that box has watched the item succeed once (the promotion gate).
+schema: 1
+
+schedule: "04:30"
+
+posture:
+  - id: container-images-current
+    mode: report
+  - id: os-packages-current
+    mode: report
+  - id: logs-bounded
+    mode: report
+  - id: node-facts-fresh
+    mode: report
+  - id: tls-material-valid
+    mode: report
+  - id: intrusion-prevention-reviewed
+    mode: report
+  - id: tailnet-healthy
+    mode: report
+  - id: data-recoverable
+    mode: report
+  - id: credentials-within-rotation-window
+    mode: report
+  - id: resources-within-baseline
+    mode: report
+  - id: logs-within-baseline
+    mode: report

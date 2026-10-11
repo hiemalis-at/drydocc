@@ -1,0 +1,17 @@
+# Text files - ensure consistent line endings
+*.md text=auto
+*.json text=auto
+*.yaml text=auto
+*.yml text=auto
+*.sh text eol=lf
+*.py text eol=lf
+*.txt text=auto
+
+# Binary files
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.pdf binary
+*.zip binary
+*.tar.gz binary
