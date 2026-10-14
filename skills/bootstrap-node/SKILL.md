@@ -41,6 +41,10 @@ metadata:
   - The fail2ban jail config (root) — see `references/hardening-recipes.md`
     § "fail2ban"
   - The firewall tool's persistent store (per `system_facts.firewall.tool`)
+  - `/etc/sysctl.d/90-drydocc-hardening.conf` (root, 0644) — see
+    `references/hardening-recipes.md` § "Kernel hardening"
+  - The file-integrity tool's exclusions and database (root) — see
+    `references/hardening-recipes.md` § "File integrity"
   - `/etc/drydocc/node-name` (root, 0644)
   - `/home/doccap/.ssh/drydocc-fork{,.pub}` — the node's own fork deploy key,
     generated on the node (`references/hardening-recipes.md` § "Fork write access")
@@ -105,6 +109,9 @@ it stopped.
      `[decision: bootstrap.rebootstrap]` If no,
      exit. If yes, continue in **audit-&-repair** mode (probes still skip
      already-correct state; mismatches are reported, not silently overwritten).
+     A `hardening.*` field the profile lacks — one added to the baseline after
+     this node was bootstrapped — reads as `unknown`. This run probes it and
+     establishes it like any other drift, which is how older nodes catch up.
    - If `nodes/<slug>/` exists but `last_bootstrapped` is `null` → **resume**
      silently.
    - Otherwise → **fresh** run.
@@ -211,6 +218,8 @@ Consult `references/hardening-recipes.md` for each idempotent snippet.
        using whichever tool `system_facts.firewall.tool` names. Some systems
        ship an active firewall by default that would otherwise block it.
     c. Write the SSH server's config with root login off, password auth off,
+       the session policy (empty passwords and X11 forwarding refused,
+       public keys on, dead-peer keepalive),
        and **both** `Port 22` and `Port <ssh_fallback_port>` listening, exactly
        as `references/hardening-recipes.md` § "SSH lockdown ordering" Step 3
        specifies; then **reload** (not restart) it so the root session
@@ -222,7 +231,8 @@ Consult `references/hardening-recipes.md` for each idempotent snippet.
     the box is still reachable on port 22 (and the root session is live) — keep
     sessions intact, journal `partial`, halt (recovery checklist below).
 22. Persist `ssh.*`, `hardening.ssh_root_login: disabled`,
-    `hardening.ssh_password_auth: disabled` to `node.yaml`.
+    `hardening.ssh_password_auth: disabled`, and `hardening.ssh_session_policy`
+    (as the recipe's Record step decides) to `node.yaml`.
 
 ### Phase 3 — Hardening (shared)
 
@@ -260,6 +270,11 @@ escalating with `sudo`. Consult `references/hardening-recipes.md`.
     `tailscale set --ssh` so resumed/already-joined nodes self-heal too.
 27. `loginctl enable-linger doccap`.
 28. Write `/etc/drydocc/node-name` containing `<slug>`.
+28b. **Harden kernel parameters** per `references/hardening-recipes.md`
+    § "Kernel hardening". It runs after the tailnet join because the
+    forwarding verdict reads the node's own tailnet preferences. Derive the
+    verdict, write the drop-in, re-apply it in boot order, and read every key
+    back. Journal the verdict and the consumer probe that decided it.
 
 ### Phase 4 — Tailscale cut-over verification
 
@@ -298,12 +313,22 @@ escalating with `sudo`. Consult `references/hardening-recipes.md`.
     deploy key is registered. Resume probe: a working copy whose
     `origin` is already the SSH URL and whose verification passes is
     skipped; any other existing working copy is re-pointed, not re-cloned.
+30b. **Initialise file integrity**, last on the node, per
+    `references/hardening-recipes.md` § "File integrity": write the
+    exclusions, init the database under `node-exec`'s lingering contract,
+    promote it, and confirm the first check is clean. Hold the database's
+    `sha256:` hash for the journal. Resume probe: a database whose hash
+    matches the one the last bootstrap journal recorded, and whose check is
+    clean, is skipped. A database that exists but matches no recorded hash is
+    drift. Report it, and re-init only with the admin's approval.
 
 ### Phase 6 — Finalize
 
 31. Update `nodes/<slug>/node.yaml`: `last_bootstrapped: <ISO8601 UTC>`,
     `hardening.firewall: enabled`, `hardening.fail2ban: enabled`,
     `hardening.ssh_root_login: disabled`, `hardening.ssh_password_auth: disabled`,
+    `hardening.ssh_session_policy` (as step 22 recorded it),
+    `hardening.kernel_hardening: enabled`, `hardening.file_integrity: enabled`,
     `hardening.tailscale: joined` (`deferred` when the tailnet is off), the `remote_ide` block from the step-29b probe
     (`vscode_server`, `reason`, `probed: <today>`), plus any
     `provisioning.*`/`ssh.*`/`system_facts.*`/`identity.*` not yet written (the
@@ -316,7 +341,9 @@ escalating with `sudo`. Consult `references/hardening-recipes.md`.
     - `## What was done` — bullet list (provisioning, key, hardening), naming
       the `system_facts` and `identity` discovered in step 14 explicitly (the
       **hash**, never the raw machine id); see `references/journal.md` for the
-      phrasing.
+      phrasing. Also name the forwarding verdict (step 28b), and the integrity
+      database path and its `sha256:` hash (step 30b). That hash is the
+      off-node record every later integrity check compares against.
     - `## Commands` — every command verbatim, with exit codes.
     - `## Notes / drift detected` — anything surprising.
     - **NEVER include the root password, VM password, `$DOCCAP_TS_KEY`, or

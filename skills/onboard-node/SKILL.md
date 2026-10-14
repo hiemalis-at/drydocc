@@ -33,9 +33,11 @@ metadata:
     `/etc/fail2ban/jail.d/sshd.local`, the sshd drop-in fragment at
     `node.yaml:ssh.config_include_dir` (an in-place edit of the main sshd
     config when that fact is `null` — see `bootstrap-node`'s SSH lockdown
-    recipe), and the firewall tool's persistent store (per
-    `system_facts.firewall.tool`). Nothing is written on the box unless an
-    `apply` choice elects it.
+    recipe), the firewall tool's persistent store (per
+    `system_facts.firewall.tool`), `/etc/sysctl.d/90-drydocc-hardening.conf`,
+    and the file-integrity tool's exclusions and database (installing the tool
+    through `system_facts.package_manager` when it is absent). Nothing is
+    written on the box unless an `apply` choice elects it.
   - `/home/doccap/.ssh/drydocc-fork{,.pub}` and `/home/doccap/<repo>`
     (doccap:doccap; the node's own deploy key and the fork cloned with it)
     iff Phase 8 is opted into.
@@ -217,7 +219,7 @@ its owner.
 
 ### Phase 6 — Classify hardening
 
-13. For each of the five `hardening.*` fields, apply the rules from
+13. For each of the eight `hardening.*` fields, apply the rules from
     `references/onboard-recipes.md` § "Hardening classification rules" against the
     probe output. Build a `drift_report` array; each entry carries
     `{field, current, desired, classification, bootstrap_anchor,
@@ -252,8 +254,16 @@ its owner.
     a single menu choice. Treat all four bootstrap anchors as one
     transaction: any non-zero exit during the sequence flips the
     composite outcome to `apply-failed` for that item.
-16. If any sshd-affecting apply ran (`ssh_root_login` or
-    `ssh_password_auth`), perform the cut-over routine from
+      For `hardening.kernel_hardening`, the forwarding verdict comes from the
+      probe, and an admin answer can add to it. Forwarding is never turned off
+      under a consumer the probe or the admin named. The menu preamble shows
+      the verdict before the admin chooses.
+
+      For `hardening.file_integrity`, an `apply` is **queued, not run**. The
+      database is initialised in step 18c, after everything else this run
+      changes on the box.
+16. If any sshd-affecting apply ran (`ssh_root_login`, `ssh_password_auth`
+    or `ssh_session_policy`), perform the cut-over routine from
     `bootstrap-node/references/hardening-recipes.md`
     § "SSH-key cut-over routine (Phase 2)" once, after
     the last sshd apply. On failure: both sshd fields revert to
@@ -281,6 +291,11 @@ its owner.
     Without the fork on the node, the post-onboard
     `/apply-use-case <slug>` apply path won't work — but onboarding
     itself still completes.
+18c. If a `file_integrity` apply was queued in Phase 7, initialise it now,
+    per `bootstrap-node/references/hardening-recipes.md` § "File integrity",
+    so the database records the box as this run leaves it. Hold the
+    `sha256:` hash for the journal. A non-zero exit sets the field to
+    `unknown` and is journaled `apply-failed`, the same as any Phase 7 item.
 
 ### Phase 9 — Finalize
 
@@ -302,7 +317,9 @@ its owner.
     - Set `last_bootstrapped: <ISO8601 UTC timestamp>` **only if**
       every `hardening.*` field is now at baseline (`firewall: enabled`,
       `fail2ban: enabled`, `ssh_root_login: disabled`,
-      `ssh_password_auth: disabled`, `tailscale: joined`) AND the
+      `ssh_password_auth: disabled`, `ssh_session_policy: enabled`,
+      `kernel_hardening: enabled`, `file_integrity: enabled`,
+      `tailscale: joined`) AND the
       cut-over verification routine passed during this run. Otherwise
       leave `last_bootstrapped: null` so the lifecycle is honest about
       the box's state.
@@ -319,6 +336,7 @@ its owner.
       check, every accept-menu preview, captured verbatim with exit codes
       and trimmed stdout/stderr. Sub-headed by item:
       `### Probe: hardening.firewall`, `### Apply: hardening.ssh_root_login`,
+      `### Apply: hardening.file_integrity` (path and `sha256:` hash),
       `### Cut-over verification`, `### Cluster: nextcloud`,
       `### Service: nginx.service`, etc.
     - `## Notes / drift detected` — narrative for every drift item the
@@ -396,12 +414,13 @@ and Phase 7 continues with the next item.
   work, and the document says so.
 - Restart or modify any adopted container or systemd user unit. Only the
   remediation anchors the admin approves are executed (sshd, firewall,
-  fail2ban, tailscaled, doccap-user setup).
+  fail2ban, tailscaled, kernel hardening, file integrity, doccap-user setup).
 - Retroactively materialize quadlets — scaffolded docs are
   `status: planned`; apply moves to the node.
 - Modify existing use-case docs. A slug collision leaves the doc untouched and
   notes the live state under `## Notes / drift detected`.
-- Fix non-hardening drift (custom sysctl, unattended-upgrades, kernel modules,
+- Fix non-hardening drift (sysctl keys outside the drydocc hardening drop-in,
+  unattended-upgrades, kernel modules,
   …) — findings land in `## Notes / drift detected` and stop there.
 - Onboard a box whose `system_facts.service_manager` is not `systemd` —
   refuses on that missing capability (quadlets require systemd). Every

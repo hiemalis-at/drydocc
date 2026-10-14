@@ -1,6 +1,6 @@
 ---
 name: node-maintenance
-description: Assess and execute recurring maintenance on a node — container image currency, OS package updates, log growth, fact freshness, certificate expiry, intrusion-prevention review, tailnet health, backup coverage, credential rotation windows, and per-container resource and log telemetry against a learned baseline. Derives the work from the node's own inventory of installed use-cases, backup strategies, and security stance rather than running a fixed task list, and holds every node in the fork to one posture. Optionally renders an assess-only timer for unattended sweeps and a one-shot telemetry sampler. Use for routine upkeep or an unattended sweep.
+description: Assess and execute recurring maintenance on a node — container image currency, OS package updates, log growth, fact freshness, certificate expiry, intrusion-prevention review, tailnet health, backup coverage, credential rotation windows, per-container resource and log telemetry against a learned baseline, and a security audit (hardening drift, accounts and sudo, privileged files, scheduled jobs, exposed listeners, auth events, file integrity, build toolchains) against the node's own baseline. Derives the work from the node's own inventory of installed use-cases, backup strategies, and security stance rather than running a fixed task list, and holds every node in the fork to one posture. Optionally renders an assess-only timer for unattended sweeps and a one-shot telemetry sampler. Use for routine upkeep or an unattended sweep.
 compatibility: Runs inside a drydocc fork; needs a shell and file edits.
 metadata:
   skillset: drydocc
@@ -55,6 +55,8 @@ the same day; that is the design, not a compromise.
   block and no other; `telemetry.last_evaluated` and `telemetry.baseline` in
   `nodes/<self>/use-cases/<slug>.audit.yaml` — those two fields and nothing else
   in that file; the journal entry.
+- **On-node writes from the security audit:** only the file-integrity
+  database, and only on an accepted re-base. Every other security item reads.
 - **On-node side effects:** a rendered script at
   `~/.config/drydocc/maintenance.sh` and a systemd user service+timer at
   `~/.config/systemd/user/drydocc-maintenance.{service,timer}`; a run log at
@@ -140,6 +142,13 @@ the same day; that is the design, not a compromise.
    few samples yet is `n/a` with the date its baseline becomes possible, not a
    pass.
 
+   The eight security-audit items follow `references/maintenance-recipes.md`
+   § "Security audit". Each compares the live state with this node's own
+   `security_baseline`, never with an expected count. A node with no baseline
+   yet records one and lists everything it recorded. The integrity check runs
+   outside the bundled probe, as `NODE_RUN_LINGER` `dd-maintenance-integrity`,
+   and only after the database's hash matches the recorded one.
+
 6. **Render the findings report** per
    `references/maintenance-recipes.md` § "The findings report": one row per
    item with verdict, risk and cost; then the posture deviations; then the
@@ -157,6 +166,11 @@ the same day; that is the design, not a compromise.
    - **Never perform a delegated remedy.** Hardening repair, backup setup,
      restore proof and credential rotation are emitted as invocations of the
      command that owns them, and this command does not do them itself.
+
+   The security-audit items act only on `[s] accept <id>`, one item at a
+   time, after every change it accepts has been shown. A critical finding is
+   never accepted this way. They never remove an account, a privilege bit, a
+   scheduled job or a package.
 
    The telemetry items act only on `[r] rebase <slug>` — accepting current
    behaviour as the new normal — and only when the admin chooses it for that
@@ -199,7 +213,9 @@ the same day; that is the design, not a compromise.
     added to `verified_auto`. For each use-case the telemetry items evaluated,
     write `telemetry.last_evaluated`, and `telemetry.baseline` where one was
     established or an accepted re-base replaced it — preserving every other
-    field of `<slug>.audit.yaml` verbatim. Write back `node.yaml:system_facts` if
+    field of `<slug>.audit.yaml` verbatim. Write `security_baseline` where a
+    first run recorded it or an accepted re-base replaced it, including the
+    new `integrity_db_hash` after an integrity re-base. Write back `node.yaml:system_facts` if
     § "Fact freshness" ran and found changed keys — that block only, and only
     after the probe verified each value.
 
@@ -210,7 +226,10 @@ the same day; that is the design, not a compromise.
     multi-part run. `## Commands` carries the composed commands verbatim, so an
     admin can inspect or replay them without the agent. **Never** journal a secret value,
     a ban source address, certificate contents, a notification topic, or a log
-    line — telemetry findings are statistics and counts. `outcome` is `success` when
+    line — telemetry findings are statistics and counts. The same holds for
+    the security audit: never a password hash, key material, a login's source
+    address, a file's contents or a scheduled job's command line. Paths,
+    account names, unit names, counts and `sha256:` digests only. `outcome` is `success` when
     every assessed item resolved, `partial` when any item failed or was left
     `UNKNOWN`, `dry-run` under `--report-only`.
 
@@ -237,6 +256,14 @@ Maintenance posture for vps-fra-01 — last sweep 2026-08-14 (30 days ago)
 | credentials-within-rotation-window| off    | SKIPPED | disabled here: quarterly access audit  | —       | —        |
 | resources-within-baseline         | report | DRIFT   | nextcloud-app memory +9%/day, R² 0.93  | none    | none     |
 | logs-within-baseline              | report | OK      | 2 use-cases in baseline; 1 re-baselining | none  | none     |
+| node-hardening-holds              | report | OK      | firewall, fail2ban, sshd, kernel hold  | none    | none     |
+| access-reviewed                   | report | OK      | root only at UID 0; 1 key holder       | none    | none     |
+| privileged-files-within-baseline  | report | OK      | 31 setuid/setgid, none new             | none    | none     |
+| persistence-reviewed              | report | DRIFT   | 1 system timer not seen before         | none    | none     |
+| exposure-matches-declaration      | report | OK      | 4 listeners, all declared              | none    | none     |
+| auth-events-reviewed              | report | OK      | 212 failures, 0 burst-then-success     | none    | none     |
+| file-integrity-verified           | report | DRIFT   | 14 changed: 13 package-explained, 1 not | low    | none     |
+| build-toolchain-absent            | report | OK      | no compiler or build system            | none    | none     |
 
 Posture deviations from the fork-wide bar:
   logs-bounded                        auto  (promoted here; fork-wide is report)
@@ -269,13 +296,17 @@ Delegated — these are not this command's to fix:
   design.
 - **Keep log content.** The sampler counts warning and error lines per unit
   and discards them. Reading what the errors say is the admin's, on the node.
+- **Remove what the security audit finds**, or run a rootkit scanner or a
+  third-party hardening score. Findings are the admin's to act on; the items
+  are outcomes this skill derives and verifies.
 - **Extend the catalog per fork.** An outcome with no derivation and no
   verification behind it is a promise nothing can keep.
 
 ## See also
 
-- `references/maintenance-recipes.md` — the posture catalog, the three outcome
-  contracts, and every concrete command this skill's steps compose.
+- `references/maintenance-recipes.md` — the posture catalog, the outcome
+  contracts, the security audit, and every concrete command this skill's steps
+  compose.
 - `conventions/references/maintenance-manifest.md` — the two-layer posture
   schema, the merge rule, and the promotion gate.
 - `list-use-cases` — the same inventory join, rendered as a plain table with no

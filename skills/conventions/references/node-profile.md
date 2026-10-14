@@ -71,6 +71,9 @@ hardening:                     # each: enabled | disabled | unknown
   fail2ban: enabled
   ssh_root_login: disabled     # should be disabled
   ssh_password_auth: disabled  # should be disabled
+  ssh_session_policy: enabled  # empty passwords, X11 forwarding, dead-peer keepalive
+  kernel_hardening: enabled    # the drydocc sysctl drop-in holds live
+  file_integrity: enabled      # an integrity database is initialised, its hash recorded
   tailscale: joined            # joined | deferred | unknown
 remote_ide:
   vscode_server: compatible      # compatible | incompatible | unknown
@@ -229,6 +232,26 @@ a field's name and enum do not convey.
   `system_facts`'s job. `unknown` means not yet verified.
   - **`tailscale`** — Set to `joined` only after `tailscale up` succeeds *and*
     the node's own status entry reports it online under that hostname.
+  - **`ssh_session_policy`** — `enabled` when the server's effective config
+    refuses empty passwords, refuses X11 forwarding, requires public-key
+    authentication, and drops dead peers through keepalive probes. Idle
+    sessions are **not** dropped: Remote-SSH and `node-exec` sessions sit idle
+    for a long time on purpose.
+  - **`kernel_hardening`** — `enabled` when every key in the drydocc sysctl
+    drop-in reads back live at its derived value. Packet forwarding left on
+    for a consumer the probe found (a container engine that needs it, a node
+    advertising tailnet routes) still counts as `enabled`, because the
+    derived value for that node is "on".
+  - **`file_integrity`** — `enabled` when a file-integrity database has been
+    initialised on the hardened box and its hash recorded off the node (in the
+    journal). The tool that provides it is recorded under
+    `system_facts.capabilities`, not here.
+  - **Absent field** — a profile written before a field existed reads it as
+    `unknown`. The next `/bootstrap-node` audit-&-repair run probes the field
+    and offers to establish it, so older nodes catch up on their own.
+  - **`fail2ban`** names a tool, which breaks the rule above. The name
+    predates the rule and stays, because renaming a field under live nodes
+    would orphan their profiles. New fields never follow it.
   - Future flags (e.g. `firewall_default_deny_inbound`, `mac_enforcing`) take
     tool-agnostic names, with the concrete tool recorded in `system_facts`.
 - **`remote_ide`** — Whether the node can host an in-IDE remote backend. Probed

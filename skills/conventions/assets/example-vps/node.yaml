@@ -41,6 +41,9 @@ hardening:
   fail2ban: enabled
   ssh_root_login: disabled
   ssh_password_auth: disabled
+  ssh_session_policy: enabled
+  kernel_hardening: enabled
+  file_integrity: enabled
   tailscale: joined
 remote_ide:
   vscode_server: compatible

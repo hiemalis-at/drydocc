@@ -44,10 +44,12 @@ documents and its journal.
   (`drydocc/<prototype>/<slug>`) becomes `drydocc/<target>/<slug>`; an
   infra-global one is unchanged. **No value** is ever exported: lab secrets are
   generated per run and die with it.
-- **Audit and backup manifests** — the authored half only. The skill-written
-  halves (`audit-manifest.md`, including `telemetry`'s learned baseline;
-  `backup-manifest.md`) are reset to their never-run values: they describe the
-  lab box.
+- **Audit, backup and maintenance manifests** — the authored half only. The
+  skill-written halves (`audit-manifest.md`, including `telemetry`'s learned
+  baseline; `backup-manifest.md`; `maintenance-manifest.md`, including
+  `verified_auto` and `security_baseline`) are reset to their never-run
+  values: they describe the lab box. A posture item set to `auto` therefore
+  stays refused on the new box until that box has watched it succeed.
 - **Left in the lab** — the journal, the prototype's data (volume contents),
   node-level backup targets (they point at lab machines), and every fork-wide
   file under `nodes/`. The runbook names each of these, so nothing is dropped

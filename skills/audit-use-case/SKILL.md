@@ -89,7 +89,7 @@ repo-only write authority are in the `conventions` skill's
    `spec.containers.*.image` must carry a pinned tag (`:latest` is a validation
    error). These are reported even if every subsequent probe fails.
 
-4. **Run the Tier 1 probe.** Issue the bundled `bash -s` heredoc from
+4. **Run the Tier 1 probe.** Issue the bundled probe script from
    `references/audit-recipes.md` § "The bundled probe" as a single `NODE_RUN`,
    substituting from step 3: the slug, the declared container/network/volume
    names, the migration unit (empty when the doc declares none), and the node's

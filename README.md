@@ -200,7 +200,7 @@ and `.agents/skills`, and you invoke them as `/<name>`.
 | | [`/audit-use-case`](skills/audit-use-case/SKILL.md) | Read-only drift report, declared against live, plus config a rebuild would lose |
 | Data protection | [`/backup-use-case`](skills/backup-use-case/SKILL.md) | Proposes and activates volume backups to an rsync or S3-compatible target |
 | | [`/restore-use-case`](skills/restore-use-case/SKILL.md) | Restores a sealed snapshot, as a scratch test or live; never deletes current data |
-| Operations | [`/node-maintenance`](skills/node-maintenance/SKILL.md) | Recurring upkeep derived from the node's own inventory, with per-container telemetry baselines |
+| Operations | [`/node-maintenance`](skills/node-maintenance/SKILL.md) | Recurring upkeep derived from the node's own inventory, with per-container telemetry baselines and a security audit against the node's own baseline |
 | | [`/node-notify`](skills/node-notify/SKILL.md) | Optional ntfy push alerts: failed runs, anomalies, a node gone silent |
 | | [`/continue-last-command`](skills/continue-last-command/SKILL.md) | Resumes a run that paused for a secret, or that the agent itself dropped |
 | Lab | [`/lab`](skills/lab/SKILL.md) | Throwaway VMs for scenario tests and prototypes, and replay-verified runbooks for real hardware |
@@ -293,7 +293,11 @@ release may still change them, and the [changelog](CHANGELOG.md) says when.
 | `/modify-use-case`, `/remove-use-case`, `/list-use-cases`, `/node-maintenance` | Not yet run end to end |
 
 Each recipe's *Observed dialects* table records exactly which systems a step
-has been verified on.
+has been verified on. The kernel hardening, SSH session policy and
+file-integrity steps added after 0.1.0 have run in the lab: a fresh
+`/bootstrap-node`, then a report-only `/node-maintenance` sweep of the
+security-audit items. `/onboard-node`'s side of them, and an interactive
+sweep that records a baseline, have not run yet.
 
 **Not implemented yet**
 

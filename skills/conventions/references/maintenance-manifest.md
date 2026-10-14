@@ -79,6 +79,22 @@ posture:
     mode: report
   - id: logs-within-baseline
     mode: report
+  - id: node-hardening-holds
+    mode: report
+  - id: access-reviewed
+    mode: report
+  - id: privileged-files-within-baseline
+    mode: report
+  - id: persistence-reviewed
+    mode: report
+  - id: exposure-matches-declaration
+    mode: report
+  - id: auth-events-reviewed
+    mode: report
+  - id: file-integrity-verified
+    mode: report
+  - id: build-toolchain-absent
+    mode: report
 ```
 
 ```yaml
@@ -102,6 +118,19 @@ automation_rendered_commit: null
 last_maintenance: null
 last_maintenance_outcome: null
 verified_auto: [logs-bounded]
+security_baseline:            # null until the first security-audit run
+  recorded: 2026-09-12
+  machine_id_hash: "sha256:…"
+  suid_sgid: [/usr/bin/passwd, /usr/bin/su, /usr/bin/sudo]
+  world_writable: []
+  persistence: [timer:logrotate.timer]
+  accounts:
+    login_shell: [root, doccap]
+    authorized_keys: [doccap]
+  listeners: []
+  integrity_db_hash: "sha256:…"
+  rebased:
+    file-integrity-verified: 2026-09-12
 ```
 
 ## Field descriptions
@@ -155,6 +184,37 @@ them makes the node lie about itself.
   practice; `/node-maintenance` adds an id after a watched success and never
   removes one on its own. Removing an id by hand is how an admin revokes
   unattended permission.
+- **`security_baseline`** — What the security-audit items compare against:
+  this node's own last accepted state, never an expected count for a kind of
+  system. `null` until the first run records it. Box-bound: it describes one
+  machine, so a runbook bundle resets it (`references/runbook-bundle.md`).
+  Holds paths, identifiers, account names and digests, never a command
+  line, a key or a password hash. Each list is sorted, so a diff reads
+  cleanly.
+  - **`recorded`** — ISO date the baseline was first recorded.
+  - **`machine_id_hash`** — `node.yaml:identity.machine_id_hash` at that time.
+    A different value on a later run means the box was replaced, and the
+    baseline is recorded afresh.
+  - **`suid_sgid`**, **`world_writable`** — absolute paths
+    (`privileged-files-within-baseline`).
+  - **`persistence`** — scheduled-job identifiers in the form the recipe
+    defines (`timer:<unit>`, `user-timer:<unit>`, `cron-file:<path>`,
+    `crontab:<account>:sha256:<digest>`, `at:<account>:sha256:<digest>`).
+    Framework-owned `drydocc-*` units are exempt by name and never listed.
+  - **`accounts.login_shell`**, **`accounts.authorized_keys`** — account names
+    (`access-reviewed`).
+  - **`listeners`** — `<proto>:<addr>:<port>` entries the admin accepted
+    beyond what the declarations explain (`exposure-matches-declaration`).
+  - **`integrity_db_hash`** — `sha256:` of the integrity database as last
+    initialised or re-based. It mirrors the journal entry that recorded it,
+    and `file-integrity-verified` checks the two agree before trusting the
+    database.
+  - **`rebased.<id>`** — ISO date of each item's last accepted re-base.
+
+  Policy for these items lives in `posture[]` like any other item: `off`
+  with a `note` is how a node that builds software opts out of
+  `build-toolchain-absent`. The baselines themselves are only ever written
+  by `/node-maintenance`, on a first run or an accepted re-base.
 
 ## The promotion gate
 
@@ -179,6 +239,8 @@ posture says.
 |---|---|
 | First `/node-maintenance` on any node in the fork | First-run walkthrough authors `nodes/maintenance.yaml` at the default posture (everything `report`) |
 | First `/node-maintenance` on this node | Authors `nodes/<node>/maintenance.yaml` with an empty `posture[]` and the skill-written half nulled |
+| First security-audit run on this node | Records `security_baseline` and lists all of it in the report |
+| Accepted security re-base (`[s] accept <id>`) | Replaces that item's part of `security_baseline` and stamps `rebased.<id>` |
 | Each interactive run | Updates `last_maintenance*`; appends to `verified_auto` on a watched success; re-renders automation and updates `automation_rendered_commit` if the merged manifest changed |
 | Each unattended run | Writes to the on-node run log only. The manifest is updated when the next interactive run catches that log up — the node's working copy is not a place unattended jobs commit from |
 | `/node-maintenance --setup` | Discards and re-renders the on-node automation, then proceeds as if `automation_rendered_commit` were null. Never edits the authored half |

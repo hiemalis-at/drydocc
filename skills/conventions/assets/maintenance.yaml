@@ -32,3 +32,19 @@ posture:
     mode: report
   - id: logs-within-baseline
     mode: report
+  - id: node-hardening-holds
+    mode: report
+  - id: access-reviewed
+    mode: report
+  - id: privileged-files-within-baseline
+    mode: report
+  - id: persistence-reviewed
+    mode: report
+  - id: exposure-matches-declaration
+    mode: report
+  - id: auth-events-reviewed
+    mode: report
+  - id: file-integrity-verified
+    mode: report
+  - id: build-toolchain-absent
+    mode: report

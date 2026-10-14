@@ -30,9 +30,12 @@ target links to `podman-quadlets` `## Render from spec`.
 
 ## Inventory probes
 
-The probe matrix is one bundled SSH session — `ssh <initial> bash -s
-<<'PROBE' … PROBE'` — that runs every check in a single round-trip, on any
-box regardless of distro. Output lines are stable shape `<key>=<value>` so
+The probe matrix is one bundled SSH session that runs every check in a
+single round-trip, on any box regardless of distro. Pass it as an argument
+with stdin closed (`ssh <initial> "bash -c '<probe>' probe" </dev/null`),
+never as a `bash -s` heredoc. With a heredoc the script is stdin, and a
+command inside it that prompts, such as a package manager asking to import a
+repository key, swallows the rest of the probe. Output lines are stable shape `<key>=<value>` so
 the agent can parse each into the inventory record; the probe only reads —
 nothing on the box is written here.
 
@@ -42,8 +45,11 @@ described in this repository before: every `system_facts` dialect fact
 `firewall.{tool,rule_model,tag_mechanism}`, `rootless_ready`,
 `capabilities.{python3,rsync,tmux}`), the machine-identity pair
 (`identity.*`), the current `doccap` user/sudoers/pubkey/linger state, the
-sshd config in force, every running container, every listening port, and
-every enabled systemd unit the framework doesn't already account for.
+sshd config in force (lockdown and session policy), the live value of every
+drydocc kernel-hardening key with the forwarding-consumer hints, the
+integrity tool and its database hash, every running container, every
+listening port, and every enabled systemd unit the framework doesn't already
+account for.
 
 **Fact.** Every fact above is `unknown` until this probe runs — none is ever
 inferred from `distro`. Three of them (`package_manager`, `mac_framework`,
@@ -51,7 +57,7 @@ inferred from `distro`. Three of them (`package_manager`, `mac_framework`,
 described yet and need a try-each-in-order loop; the rest are closed enough
 (a capability check, or a plain presence check for the open `capabilities:`
 map) to resolve directly. `$PUBKEY`, `$SSHD_EFFECTIVE_CONFIG_CMD`,
-`$PM_PROBES`, `$MAC_PROBES`, and `$FW_PROBES` are templates the agent fills
+`$PM_PROBES`, `$MAC_PROBES`, `$FW_PROBES`, and `$INTEGRITY_PROBES` are templates the agent fills
 in before sending the session — the candidate-loop ones from § "Observed
 dialects" below (or freshly derived and then appended there), the same way
 `$PUBKEY` is already filled from the admin's pasted key. The probe itself:
@@ -94,10 +100,68 @@ if [ -n "$SSHD_EFFECTIVE_CONFIG_CMD" ]; then
   sudo -n sh -c "$SSHD_EFFECTIVE_CONFIG_CMD" 2>/dev/null | awk '
     $1=="permitrootlogin"       {print "sshd_root="$2}
     $1=="passwordauthentication"{print "sshd_passauth="$2}
+    $1=="kbdinteractiveauthentication" || $1=="challengeresponseauthentication" \
+                                 {print "sshd_kbdint="$2}
+    $1=="permitemptypasswords"  {print "sshd_emptypw="$2}
+    $1=="pubkeyauthentication"  {print "sshd_pubkey="$2}
+    $1=="x11forwarding"         {print "sshd_x11="$2}
+    $1=="clientaliveinterval"   {print "sshd_alive_interval="$2}
+    $1=="clientalivecountmax"   {print "sshd_alive_count="$2}
     $1=="port"                   {print "sshd_port="$2}'
 else
-  printf 'sshd_root=unknown\nsshd_passauth=unknown\nsshd_port=unknown\n'
+  for k in root passauth kbdint emptypw pubkey x11 alive_interval alive_count port; do
+    echo "sshd_${k}=unknown"
+  done
 fi
+
+# Kernel hardening — the live value of every key the drydocc drop-in can
+# write (bootstrap-node/references/hardening-recipes.md § "Kernel hardening"),
+# and whether drydocc's own drop-in is there. Reading needs no privilege.
+for k in kernel.randomize_va_space kernel.kptr_restrict kernel.dmesg_restrict \
+         net.ipv4.tcp_syncookies \
+         net.ipv4.conf.all.accept_redirects net.ipv4.conf.default.accept_redirects \
+         net.ipv4.conf.all.send_redirects net.ipv4.conf.default.send_redirects \
+         net.ipv6.conf.all.accept_redirects net.ipv6.conf.default.accept_redirects \
+         net.ipv4.conf.all.rp_filter net.ipv4.conf.default.rp_filter \
+         net.ipv4.ip_forward net.ipv6.conf.all.forwarding; do
+  echo "sysctl_${k}=$(sysctl -n "$k" 2>/dev/null || echo unknown)"
+done
+test -f /etc/sysctl.d/90-drydocc-hardening.conf \
+  && echo sysctl_dropin=present || echo sysctl_dropin=absent
+# Forwarding consumer hint from the tailnet: the node's OWN advertised routes.
+# Rootful container networks come from the container inventory below.
+if command -v tailscale >/dev/null 2>&1; then
+  ROUTES="$(tailscale debug prefs 2>/dev/null | tr -d ' \n' \
+    | grep -o '"AdvertiseRoutes":\[[^]]*\]')"
+  case "$ROUTES" in
+    *'['*'/'*']'*) echo ts_advertises_routes=yes ;;
+    '')           echo ts_advertises_routes=unknown ;;
+    *)            echo ts_advertises_routes=no ;;
+  esac
+else
+  echo ts_advertises_routes=no
+fi
+
+# File integrity. $INTEGRITY_PROBES: newline "<tool>|<db-path-cmd>" pairs
+# from bootstrap-node/references/hardening-recipes.md § "File integrity"
+# Observed dialects (or freshly derived there). <db-path-cmd> asks the
+# tool's OWN config for the database it reads — never an assumed path.
+INT_FOUND=""
+while IFS='|' read -r INT_T INT_DBCMD; do
+  [ -n "$INT_T" ] || continue
+  command -v "$INT_T" >/dev/null 2>&1 || continue
+  echo "integrity_tool=$INT_T"
+  INT_DB="$(eval "$INT_DBCMD" 2>/dev/null)"
+  if [ -n "$INT_DB" ] && sudo -n test -f "$INT_DB" 2>/dev/null; then
+    echo "integrity_db_hash=sha256:$(sudo -n sha256sum "$INT_DB" | awk '{print $1}')"
+  else
+    echo integrity_db_hash=absent
+  fi
+  INT_FOUND=1; break
+done <<INTPROBE
+$INTEGRITY_PROBES
+INTPROBE
+[ -n "$INT_FOUND" ] || printf 'integrity_tool=absent\nintegrity_db_hash=absent\n'
 
 # Package manager. $PM_PROBES: newline-separated "<value>|<binary>|<confirm-cmd>"
 # triples — <value> is what gets recorded, and is not always just the binary
@@ -384,9 +448,12 @@ preserves instead).
 | `doccap` user                       | `bootstrap-node/references/hardening-recipes.md#create-doccap-via-root-password`                | `id doccap &>/dev/null && echo present \|\| echo absent`                                                |
 | sudoers entry                        | `bootstrap-node/references/hardening-recipes.md#create-doccap-via-root-password`              | `test -f /etc/sudoers.d/doccap && cat /etc/sudoers.d/doccap \|\| echo absent`                          |
 | Admin pubkey installed               | `bootstrap-node/references/hardening-recipes.md#install-pubkey-via-password`             | `grep -qxF "$PUBKEY" ~doccap/.ssh/authorized_keys && echo present \|\| echo absent`                     |
-| sshd drop-in (port + lockdown)       | `bootstrap-node/references/hardening-recipes.md#ssh-lockdown-ordering-dual-port-transitional`| `sshd_root=` / `sshd_passauth=` / `sshd_port=` from § "Inventory probes" above (via `ssh.effective_config_cmd`) |
+| sshd drop-in (port + lockdown)       | `bootstrap-node/references/hardening-recipes.md#ssh-lockdown-ordering-dual-port-transitional`| `sshd_root=` / `sshd_passauth=` / `sshd_kbdint=` / `sshd_port=` from § "Inventory probes" above (via `ssh.effective_config_cmd`) |
 | firewall enabled + default-deny rules | `bootstrap-node/references/hardening-recipes.md#firewall`                  | `firewall_status=` + the tagged-rule read-back for `system_facts.firewall.tool`, both from § "Inventory probes" above |
 | fail2ban sshd jail                   | `bootstrap-node/references/hardening-recipes.md#fail2ban`                   | `systemctl is-active fail2ban` + `test -f /etc/fail2ban/jail.d/sshd.local`                               |
+| SSH session policy                   | `bootstrap-node/references/hardening-recipes.md#ssh-lockdown-ordering-dual-port-transitional` (same drop-in as the lockdown) | the five `sshd_emptypw=` … `sshd_alive_count=` keys from § "Inventory probes" above |
+| Kernel hardening drop-in             | `bootstrap-node/references/hardening-recipes.md#kernel-hardening`           | the `sysctl_*=` keys, `sysctl_dropin=`, and `ts_advertises_routes=` from § "Inventory probes" above, plus the rootful container networks from the container inventory |
+| File-integrity database              | `bootstrap-node/references/hardening-recipes.md#file-integrity`             | `integrity_tool=` + `integrity_db_hash=` from § "Inventory probes" above                                 |
 | Tailscale joined as `<hostname>`     | `bootstrap-node/references/hardening-recipes.md#tailscale-up`               | that section's `ts_self_up` — the node's own status entry, never a grep of the peer table                 |
 | Lingering enabled for doccap        | `bootstrap-node/references/hardening-recipes.md#lingering--identity-file`                  | `loginctl show-user doccap --property=Linger --value`                                                   |
 | `/etc/drydocc/node-name` written    | `bootstrap-node/references/hardening-recipes.md#lingering--identity-file`              | `test -f /etc/drydocc/node-name && cat /etc/drydocc/node-name \|\| echo absent`                        |
@@ -398,7 +465,7 @@ behaviour identical to a clean bootstrap.
 
 ## Hardening classification rules
 
-For each of the five `hardening.*` fields, the probe output maps to one
+For each of the eight `hardening.*` fields, the probe output maps to one
 of `aligned | drift | unknown`. Every row classifies the **probe's emitted
 key**, not a tool's output text, so a node whose firewall or SSH server is one
 nobody has written down still classifies — the § "Inventory probes" contract
@@ -409,7 +476,10 @@ already resolved which tool answered, and `unknown` is always a legal result.
 | `firewall`            | `firewall_status=` reports the rule set enforcing         | reports it present but not enforcing                    | `firewall_tool=unknown`, no probe for the tool, or sudo denied |
 | `fail2ban`            | `systemctl is-active fail2ban == active` AND the jail drop-in exists | `inactive`/`failed`, OR active but the jail drop-in absent | unit-not-found / probe error             |
 | `ssh_root_login`      | `sshd_root=no`                                            | `yes` OR `prohibit-password` (`drydocc` baseline is `no`) | `sshd_root=unknown` (`ssh.effective_config_cmd` is `null` or failed) |
-| `ssh_password_auth`   | `sshd_passauth=no`                                        | `yes`                                                   | `sshd_passauth=unknown`                   |
+| `ssh_password_auth`   | `sshd_passauth=no` AND `sshd_kbdint=no`                   | either is `yes`. Keyboard-interactive is the same password through PAM | either `unknown`                          |
+| `ssh_session_policy`  | `sshd_emptypw=no`, `sshd_pubkey=yes`, `sshd_x11=no`, and both `sshd_alive_*` greater than `0` | any of those five differs. An `sshd_alive_interval=0` means dead peers are never dropped | any of the five `unknown` |
+| `kernel_hardening`    | every `sysctl_*` key equals the value the § "Kernel hardening" verdict derives for this box | any key differs. Forwarding left on under a consumer is **not** a difference: the derived value is "as found" | any key `unknown`, or the consumer verdict could not be reached |
+| `file_integrity`      | `integrity_tool` present AND `integrity_db_hash` equals a hash this node's journal recorded | tool absent, database absent, or a database whose hash **no journal entry recorded**. The framework did not see that database built, so it cannot vouch for the state it describes | probe error / sudo denied |
 | `tailscale`           | `tailscale status` lists `<tailscale_hostname>` as active | installed but logged-out / wrong hostname                | tailscale not installed                  |
 
 Two `unknown` causes are worth distinguishing in the report, because they call
@@ -428,7 +498,8 @@ blocks live listeners even though no rule was removed.
 The matching value to write back into `node.yaml:hardening.*` follows
 the standard enum:
 
-- `firewall`, `fail2ban` → `enabled` / `disabled` / `unknown`.
+- `firewall`, `fail2ban`, `ssh_session_policy`, `kernel_hardening`,
+  `file_integrity` → `enabled` / `disabled` / `unknown`.
 - `ssh_root_login`, `ssh_password_auth` → `disabled` (= `drydocc`
   baseline reached) / `enabled` (= still permitted) / `unknown`.
 - `tailscale` → `joined` / `unknown`.
@@ -459,13 +530,30 @@ Special cases:
 - `doccap` user is **composite**: the menu offers a single
   apply/skip/defer that covers user creation + sudoers + pubkey install
   + linger together. Splitting them is footgun-prone.
-- `ssh_root_login` and `ssh_password_auth` apply choices are grouped at
-  reload time: the sshd drop-in is written once after the last
+- `ssh_root_login`, `ssh_password_auth` and `ssh_session_policy` apply
+  choices are grouped at reload time: the sshd drop-in is written once after the last
   sshd-affecting apply, then `systemctl reload sshd` runs, then the
   cut-over verification routine from `bootstrap-node` runs **once**.
-  If cut-over verification fails, both fields revert to `unknown` in
+  The drop-in carries only the lines of the sshd fields the admin applied.
+  A skipped field's lines are left out, so the box keeps what it had for
+  them, and the effective-config check expects only the applied lines.
+  If cut-over verification fails, every sshd field reverts to `unknown` in
   the node.yaml delta (the box state is what it is, but our record
   honestly says we don't know if the change stuck).
+- `kernel_hardening` renders the forwarding verdict **above** the standard
+  menu block, so the admin can name a consumer the probe missed before
+  anything is written:
+
+  ```
+  [hardening.kernel_hardening]  forwarding: <off | on>
+    consumer: <none found | rootful <engine> networks | tailnet advertises routes>
+    apply will: write the drydocc sysctl drop-in. Forwarding is <written off |
+    left as found, reverse-path filter loose>. Other sysctl files are untouched.
+    Is anything else on this box routing packets? [n] no  [y] yes, name it
+  ```
+- `file_integrity` `apply` is queued until the end of the run (`onboard-node`
+  step 18c). Its menu says so, because an init before the other applies
+  would record a box this run is about to change.
 - `tailscale = unknown` and admin chooses `apply`: the agent resolves
   `DOCCAP_TS_KEY` via `secrets` § "Session secrets" at that moment
   (lazy, env-var-first — admins who skip never trigger a resolution).

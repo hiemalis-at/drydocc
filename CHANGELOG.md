@@ -8,6 +8,63 @@ version is 0, a minor release may change conventions or the command surface.
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-10-14
+
+### Hardening
+
+- `/bootstrap-node` adds three items to the baseline, each a new
+  `hardening.*` field in `node.yaml`:
+  - `kernel_hardening` — a drydocc sysctl drop-in: address-space
+    randomisation, restricted kernel pointers and kernel log, SYN cookies, no
+    ICMP redirects. Packet forwarding is turned off only when nothing on the
+    node forwards. A docker host, or a node advertising tailnet routes, keeps
+    it on with loose reverse-path filtering.
+  - `ssh_session_policy` — sshd refuses empty passwords and X11 forwarding,
+    requires public keys, and drops dead peers through keepalive probes.
+    Idle sessions stay connected.
+  - `file_integrity` — a file-integrity database, initialised last on the
+    hardened box. Its hash goes in the journal, so a later check can tell if
+    the database was rewritten.
+- sshd's lockdown also writes `KbdInteractiveAuthentication no`.
+  `PasswordAuthentication no` alone left password login open through PAM's
+  keyboard-interactive prompt. `ssh_password_auth: disabled` now needs both
+  to be off. Existing nodes get the line on their next audit-&-repair run.
+- `/onboard-node` classifies and reconciles all eight fields. It never turns
+  forwarding off under a running consumer, and it initialises the integrity
+  database after everything else the run changes.
+- Nodes bootstrapped earlier read the new fields as `unknown`. Re-run
+  `/bootstrap-node <node>` (audit & repair) to establish them.
+- The `doccap` sudo rule is documented as what it is: passwordless, for any
+  command, and the one such rule the framework writes.
+
+### Maintenance
+
+- `/node-maintenance` gains eight security-audit posture items:
+  `node-hardening-holds`, `access-reviewed`,
+  `privileged-files-within-baseline`, `persistence-reviewed`,
+  `exposure-matches-declaration`, `auth-events-reviewed`,
+  `file-integrity-verified` and `build-toolchain-absent`. Each compares the
+  node with its own last accepted state, recorded in the new
+  `security_baseline` block of `nodes/<node>/maintenance.yaml`. They report
+  and never remove anything. `[s] accept <id>` re-bases one item after
+  showing its changes, and critical findings cannot be accepted that way.
+- Add the eight ids to `nodes/maintenance.yaml` to set their mode
+  fork-wide. Ids absent from both layers default to `report`.
+
+- The bundled probes of `/node-maintenance`, `/onboard-node` and
+  `/audit-use-case` are sent as an argument with stdin closed, not as a
+  heredoc. A command that prompted on stdin, such as a package manager asking
+  to import a repository key, could swallow the rest of the probe.
+- The sudo review treats an `ALL` rule for `root`, or for a group with no
+  members, as information rather than a finding.
+
+### Lab
+
+- `extract` resets the skill-written half of `maintenance.yaml`
+  (`verified_auto`, `security_baseline`, the last-run fields), because it
+  describes the lab box. An `auto` item stays refused on the real box until
+  that box has watched it succeed.
+
 ## [0.1.0] - 2026-10-11
 
 First public release.
@@ -118,5 +175,6 @@ First public release.
 - Agent adapters for Claude Code and Mistral Vibe, behind one documented
   contract in `scripts/lab/agents/README.md`.
 
-[Unreleased]: https://github.com/hiemalis-at/drydocc/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/hiemalis-at/drydocc/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/hiemalis-at/drydocc/releases/tag/v0.2.0
 [0.1.0]: https://github.com/hiemalis-at/drydocc/releases/tag/v0.1.0

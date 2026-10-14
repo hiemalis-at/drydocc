@@ -2042,6 +2042,9 @@ AUDIT_WRITTEN = ("last_audited", "last_audited_commit", "fingerprints")
 TELEMETRY_WRITTEN = ("last_evaluated", "baseline")
 BACKUP_WRITTEN = ("automation_rendered_commit", "last_backup", "last_backup_outcome", "last_snapshot",
                   "last_restore_test", "last_restore_test_snapshot")
+MAINTENANCE_WRITTEN = ("automation_rendered_commit", "last_maintenance", "last_maintenance_outcome",
+                       "verified_auto", "security_baseline")
+WRITTEN_EMPTY = {"fingerprints": "{}", "verified_auto": "[]"}
 YAML_RESERVED = {"y", "n", "yes", "no", "on", "off", "true", "false", "null", "~"}
 
 
@@ -2166,7 +2169,7 @@ def written_half(text: str, marker: str, keys) -> str:
     text = text.rstrip("\n") + "\n"
     if marker not in text:
         text += f"\n# ─── {marker}; do not hand-edit ───\n"
-    return text + "\n" + "".join(f"{k}: {'{}' if k == 'fingerprints' else 'null'}\n" for k in keys)
+    return text + "\n" + "".join(f"{k}: {WRITTEN_EMPTY.get(k, 'null')}\n" for k in keys)
 
 
 def portable_audit(text: str) -> str:
@@ -2177,6 +2180,13 @@ def portable_audit(text: str) -> str:
 def portable_backup(text: str) -> str:
     return written_half(drop_keys(text, BACKUP_WRITTEN), "written by /backup-use-case / /restore-use-case",
                         BACKUP_WRITTEN)
+
+
+def portable_maintenance(text: str) -> str:
+    """maintenance-manifest.md: the skill-written half describes the lab box — what
+    was watched to succeed there, and the security baselines it recorded."""
+    return written_half(drop_keys(text, MAINTENANCE_WRITTEN), "written by /node-maintenance",
+                        MAINTENANCE_WRITTEN)
 
 
 def portable_secrets(text: str, old: str, target: str) -> str:
@@ -2313,6 +2323,8 @@ def extract_bundle(root: Path, run_id: str, node: str, target: str, *, arch: str
         carried = [f for f in ("maintenance.yaml", "notify.yaml") if (src / f).is_file()]
         for f in carried:
             shutil.copyfile(src / f, out / f)
+        if "maintenance.yaml" in carried:
+            (out / "maintenance.yaml").write_text(portable_maintenance((src / "maintenance.yaml").read_text()))
         order, blocked, not_declarative, planned = recovery_order(docs)
         checks, dropped = [], []
         for c in derive_checks(docs, order):

@@ -26,9 +26,13 @@ provisioning lives in the sibling `provision-vm` skill.
   [use-case port rules](#use-case-port-rules) (add/remove, called by the
   use-case skills)
 - [fail2ban](#fail2ban)
+- [Kernel hardening](#kernel-hardening) — the drydocc sysctl drop-in;
+  packet forwarding derived from its consumers
 - [Tailscale up](#tailscale-up)
 - [Lingering & identity file](#lingering--identity-file)
 - [Fork write access](#fork-write-access) — per-node deploy key; clone, git identity, push verification
+- [File integrity](#file-integrity) — the integrity database, initialised last;
+  its hash leaves the node
 - [SSH-key cut-over routine (Phase 2)](#ssh-key-cut-over-routine-phase-2)
 - [Tailscale cut-over routine (Phase 4)](#tailscale-cut-over-routine-phase-4) — `tailscale ssh` with IP fallback (WSL2)
 - [Idempotency / resumability](#idempotency--resumability)
@@ -413,6 +417,28 @@ which — it opens the port unconditionally.
 
 **Step 3 — write the config listening on BOTH ports**, root/password off.
 
+"Password off" means **both** password routes are off. `PasswordAuthentication
+no` closes only the plain password method. A server that uses PAM still asks
+for the same password through keyboard-interactive unless
+`KbdInteractiveAuthentication no` closes that too, and with that route open,
+`hardening.ssh_password_auth: disabled` would be false. Older OpenSSH releases
+call the keyword `ChallengeResponseAuthentication` and report it under that
+name in their effective-config dump. Write whichever name `sshd -t` accepts on
+this server, and check the name the dump actually prints.
+
+Every form of the config below also carries the **session policy**
+(`hardening.ssh_session_policy`): empty passwords refused, X11 forwarding
+off, public-key authentication on, and dead peers dropped by keepalive
+probes, every 300 s and after 3 unanswered probes. That ends a session whose
+client vanished. An idle client that still answers stays connected, because
+Remote-SSH and `node-exec` sessions sit idle on purpose. **Never set the
+probe count to `0` to get an idle timeout**: on current OpenSSH that value
+turns the check off. The keywords are OpenSSH's. For another `ssh.server`,
+derive the same five outcomes from that server's own options, or record
+`ssh_session_policy: unknown` when it has no equivalent. Never write
+keywords the server does not parse, because `sshd -t` (or its equivalent)
+rejects the whole file and the reload fails.
+
 When `ssh.config_include_dir` is not `null`, (over)write a drop-in fragment
 there — the include mechanism was already confirmed present when this fact
 was probed, so auto-loading it on reload is safe to assume in this branch.
@@ -434,6 +460,12 @@ cat > "${SSH_CONFIG_INCLUDE_DIR}/00-drydocc.conf" <<EOF
 # Written by /bootstrap-node — managed by drydocc (transitional: both ports)
 PermitRootLogin no
 PasswordAuthentication no
+KbdInteractiveAuthentication no
+PermitEmptyPasswords no
+PubkeyAuthentication yes
+X11Forwarding no
+ClientAliveInterval 300
+ClientAliveCountMax 3
 Port 22
 Port ${SSH_FALLBACK_PORT}
 EOF
@@ -454,7 +486,7 @@ awk -v b="$MARK_BEGIN" -v e="$MARK_END" \
   "${SSHD_MAIN_CONFIG}" > "${SSHD_MAIN_CONFIG}.new"
 {
   cat "${SSHD_MAIN_CONFIG}.new"
-  printf '%s\nPermitRootLogin no\nPasswordAuthentication no\nPort 22\nPort %s\n%s\n' \
+  printf '%s\nPermitRootLogin no\nPasswordAuthentication no\nKbdInteractiveAuthentication no\nPermitEmptyPasswords no\nPubkeyAuthentication yes\nX11Forwarding no\nClientAliveInterval 300\nClientAliveCountMax 3\nPort 22\nPort %s\n%s\n' \
     "$MARK_BEGIN" "${SSH_FALLBACK_PORT}" "$MARK_END"
 } > "${SSHD_MAIN_CONFIG}"
 rm -f "${SSHD_MAIN_CONFIG}.new"
@@ -478,7 +510,10 @@ connection check alone cannot distinguish from success:
 # only when ssh.effective_config_cmd is not null — EVERY line must be there:
 # matching any one of them would pass with root login still on
 EFFECTIVE="$(sudo sh -c "${SSH_EFFECTIVE_CONFIG_CMD}")"
-for want in "permitrootlogin no" "passwordauthentication no" "port 22" "port ${SSH_FALLBACK_PORT}"; do
+for want in "permitrootlogin no" "passwordauthentication no" "kbdinteractiveauthentication no" \
+            "permitemptypasswords no" "pubkeyauthentication yes" "x11forwarding no" \
+            "clientaliveinterval 300" "clientalivecountmax 3" \
+            "port 22" "port ${SSH_FALLBACK_PORT}"; do
   printf '%s\n' "$EFFECTIVE" | grep -qix "$want" || { echo "effective config lacks: $want"; exit 1; }
 done
 ```
@@ -496,7 +531,8 @@ framework label? firewall?) and re-run; do not proceed.
 **Step 5 — drop port 22.** Only once the key is proven on the new port,
 rewrite the config to the final single-port form using the same branch as
 Step 3 (drop-in overwrite, or the same marker-delimited edit-in-place with the
-block body holding only `Port ${SSH_FALLBACK_PORT}`), and reload:
+block body holding the lockdown and session-policy lines and only
+`Port ${SSH_FALLBACK_PORT}`), and reload:
 
 ```bash
 # over the root connection — ssh.config_include_dir not null
@@ -504,6 +540,12 @@ cat > "${SSH_CONFIG_INCLUDE_DIR}/00-drydocc.conf" <<EOF
 # Written by /bootstrap-node — managed by drydocc
 PermitRootLogin no
 PasswordAuthentication no
+KbdInteractiveAuthentication no
+PermitEmptyPasswords no
+PubkeyAuthentication yes
+X11Forwarding no
+ClientAliveInterval 300
+ClientAliveCountMax 3
 Port ${SSH_FALLBACK_PORT}
 EOF
 sshd -t && systemctl reload sshd
@@ -515,6 +557,18 @@ same way as Step 4 — with the effective-config loop now expecting
 either is idempotent. The initial root session stays usable until the admin
 closes it.
 
+**Record.** `hardening.ssh_root_login: disabled`,
+`hardening.ssh_password_auth: disabled`, and
+`hardening.ssh_session_policy: enabled` once the Step 6 loop passes. When
+`ssh.effective_config_cmd` is `null`, the connection proves only that key
+login works, not the session policy, so record `ssh_session_policy: unknown`
+and say so in the journal.
+
+**Already-bootstrapped node.** An audit-&-repair run on a node locked down
+before the session-policy lines existed finds them missing. It rewrites the
+final single-port form directly (Step 5) and verifies it (Step 6). Steps 1–4
+exist only to move the port safely, and the port is already moved.
+
 ## Package installation
 
 One command that installs the full stack idempotently. Run as `doccap` with
@@ -523,7 +577,9 @@ One command that installs the full stack idempotently. Run as `doccap` with
 **Goal.** podman (with its rootless networking helper), tailscale, git,
 ca-certificates, fail2ban, tmux (backs `node-exec` lingering), rsync (backs
 volume backup and restore, and adoption's data migration — every later skill
-treats it as baseline), and the node's firewall tool (`system_facts.firewall.tool`) are installed and
+treats it as baseline), a file-integrity tool (backs § "File integrity"; the
+AIDE family is the seed candidate, resolved per step 2 of the derivation
+below), and the node's firewall tool (`system_facts.firewall.tool`) are installed and
 importable from a live package repository, idempotently — re-running installs
 nothing twice.
 
@@ -563,7 +619,8 @@ skill's `references/distro-agnosticism.md` Rule 4).
 
 **Verification.** Every package in the goal resolves after the install
 command exits zero: `command -v podman tailscale git fail2ban-client tmux rsync`,
-plus whatever binary/unit `system_facts.firewall.tool` names. A manager
+plus whatever binary/unit `system_facts.firewall.tool` names and the
+integrity tool's own binary (`aide` for the seed candidate). A manager
 reporting success is not sufficient by itself — a partially-applied install
 can still exit zero; re-run the presence check before trusting it.
 
@@ -581,13 +638,15 @@ fold them into the same install invocation, and update a row once reverified.
 `tmux` has been: appended to the dnf5 row's install command, it installed
 and resolved on a Fedora 44 lab node (2026-10). `rsync` was found missing
 from the baseline by a lab backup run on that same node — a minimal install
-does not ship it.
+does not ship it. The file-integrity tool joined the goal later still. All three
+are now in the dnf5 row, verified in a lab bootstrap (2026-10-14). The other
+rows still lack them.
 
 | package_manager | confirm command | install command | verified on | date |
 |---|---|---|---|---|
 | apt | `test -d /var/lib/dpkg && apt list --installed >/dev/null 2>&1 && echo ok` | `sudo DEBIAN_FRONTEND=noninteractive apt-get update && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y podman slirp4netns tailscale ufw fail2ban git ca-certificates` (add the Tailscale repo first if `apt-cache policy tailscale` shows no candidate — see below) | not independently verified in this repo's test history — carried from this file's earlier single-dialect version | — |
 | dnf | `dnf --version 2>/dev/null \| head -1 \| grep -qvi '^Dnf5' && dnf --version >/dev/null 2>&1 && echo ok` | `sudo dnf -y install dnf-plugins-core; sudo dnf config-manager --add-repo https://pkgs.tailscale.com/stable/fedora/tailscale.repo; sudo dnf -y install podman slirp4netns tailscale firewalld fail2ban git ca-certificates; sudo systemctl enable --now tailscaled` | not independently verified — Fedora 44 (test-01/test-02) shipped dnf5, so only the dnf5 row below was actually exercised; this classic form is retained for pre-dnf5 Fedora (<41) | — |
-| dnf5 | `dnf --version 2>/dev/null \| head -1 \| grep -qi '^Dnf5' && echo ok` | `sudo dnf config-manager addrepo --from-repofile=https://pkgs.tailscale.com/stable/fedora/tailscale.repo; sudo dnf -y install podman slirp4netns tailscale firewalld fail2ban git ca-certificates; sudo systemctl enable --now tailscaled` | test-01/test-02 (Fedora 44 VM) — the fix for an earlier dnf4-only assumption that failed on these nodes | 2026-06 |
+| dnf5 | `dnf --version 2>/dev/null \| head -1 \| grep -qi '^Dnf5' && echo ok` | `sudo dnf config-manager addrepo --from-repofile=https://pkgs.tailscale.com/stable/fedora/tailscale.repo; sudo dnf -y install podman slirp4netns tailscale firewalld fail2ban git ca-certificates tmux rsync aide; sudo systemctl enable --now tailscaled` | test-01/test-02 (Fedora 44 VM) — the fix for an earlier dnf4-only assumption that failed on these nodes; `tmux rsync aide` added and verified in a lab bootstrap, Fedora 44 x86_64 | 2026-06, 2026-10-14 |
 
 **apt's Tailscale repository add** (only when the base install has no
 candidate):
@@ -933,6 +992,99 @@ Every run so far has resolved to jail name `sshd` and jail.d directory
 `/etc/fail2ban/jail.d`, matching the fallback above — verified on test-01 /
 test-02, 2026-06.
 
+## Kernel hardening
+
+**Goal.** The kernel runs with the framework's network and information-leak
+hardening, the setting survives a reboot, and packet forwarding is on only
+where something on this node actually forwards. The live values are the
+state. `hardening.kernel_hardening` records that they were verified.
+
+**Fact.** None new. `sysctl.d` drop-ins are part of the systemd baseline the
+framework already gates on (`system_facts.service_manager`), so there is no
+dialect to select. The forwarding decision reads facts that already exist:
+`system_facts.container_engine`, and `hardening.tailscale` together with the
+node's own tailnet preferences.
+
+**Deriving the forwarding verdict.** Probe for a **consumer**: something on
+this node that routes packets through the host's own stack. The verdict
+decides two keys.
+
+- **A rootful container engine with host-side networks** forwards. Examples
+  are an adopted box's docker daemon, or any engine that `container_engine`
+  names running as root. Ask the engine itself for its networks, because its
+  presence alone proves nothing. Rootless podman under `doccap` is **not** a
+  consumer: its networking runs in the user's own namespace, which is why a
+  fresh drydocc node has none.
+- **A node that advertises tailnet routes or offers itself as an exit node**
+  forwards. Ask the node's own tailnet preferences, never the peer table. A
+  non-empty advertised-routes list is a consumer, and an exit node advertises
+  the default routes.
+- **Anything else the admin names** while forwarding is already on. Ask on
+  `/onboard-node`, and record the answer in the journal as the consumer.
+
+| verdict | forwarding keys | reverse-path filter |
+|---|---|---|
+| no consumer | written as `0` | `1` (strict) |
+| consumer found | **not written**: left exactly as found, never forced on | `2` (loose). Strict filtering drops the asymmetric replies a forwarding node sees |
+
+Adoption never turns forwarding off under a running consumer, even when the
+admin applies this item. Breaking an adopted box's networking is the failure
+non-destructive adoption exists to prevent.
+
+```bash
+# RP_FILTER and the forwarding block come from the verdict above
+{
+  printf '%s\n' \
+    '# Written by /bootstrap-node — managed by drydocc' \
+    'kernel.randomize_va_space = 2' \
+    'kernel.kptr_restrict = 2' \
+    'kernel.dmesg_restrict = 1' \
+    'net.ipv4.tcp_syncookies = 1' \
+    'net.ipv4.conf.all.accept_redirects = 0' \
+    'net.ipv4.conf.default.accept_redirects = 0' \
+    'net.ipv4.conf.all.send_redirects = 0' \
+    'net.ipv4.conf.default.send_redirects = 0' \
+    'net.ipv6.conf.all.accept_redirects = 0' \
+    'net.ipv6.conf.default.accept_redirects = 0' \
+    "net.ipv4.conf.all.rp_filter = ${RP_FILTER}" \
+    "net.ipv4.conf.default.rp_filter = ${RP_FILTER}"
+  [ "$FORWARDING_CONSUMER" = none ] && printf '%s\n' \
+    'net.ipv4.ip_forward = 0' \
+    'net.ipv6.conf.all.forwarding = 0'
+} | sudo install -m 0644 /dev/stdin /etc/sysctl.d/90-drydocc-hardening.conf
+sudo sysctl --system >/dev/null
+```
+
+A kernel built or booted without IPv6 has no `net.ipv6.*` keys. Leave those
+lines out instead of writing keys that fail to apply, and journal that they
+were omitted. Every other missing key is a finding to raise with the admin,
+not to drop silently.
+
+The drop-in is drydocc's own file and is rewritten whole, so re-running it is
+idempotent. It never touches `99-drydocc-unprivileged-ports.conf`, which
+`podman-quadlets` § "Privileged ports" owns, and the two share no key.
+`sysctl --system` re-applies every drop-in in boot order, so the read-back
+below proves the value a reboot would give, not just what this one write
+left behind.
+
+**Verification.** Every key the drop-in wrote reads back at its written value
+via `sysctl -n <key>`. A key that reads back different means a file applied
+later in boot order overrides it. Find it with the service manager's own
+config listing (`systemd-analyze cat-config sysctl.d`) and resolve it with the
+admin. Never rename drydocc's file to win the ordering silently. On a node with
+an active use-case, its published ports must still answer off-node: losing
+one means the forwarding verdict was wrong. Revert the forwarding lines,
+record the consumer, and re-derive.
+
+**Record.** `hardening.kernel_hardening: enabled`, and journal the forwarding
+verdict naming the consumer probe that decided it. On `/onboard-node`, also
+journal each key's value as it was before the write.
+
+#### Observed dialects — forwarding consumers; evidence, not the supported list
+| consumer | how it was recognised | verified on | date |
+|---|---|---|---|
+| none | the rootful engine (podman) had no containers and only its default network; `tailscale debug prefs` reported `AdvertiseRoutes: null` and no exit node. Forwarding written `0`, `rp_filter` `1`; all 14 keys read back after `sysctl --system` | lab, Fedora 44 x86_64 (fresh bootstrap) | 2026-10-14 |
+
 ## Tailscale up
 
 **Goal.** The node is joined to the tailnet as `${TAILSCALE_HOSTNAME}`,
@@ -1094,6 +1246,81 @@ the public key and repeat step 2; never fall back to a token in the URL.
 **Record.** Journal the public-key fingerprint (not the key), the remote URL,
 and both verification results. The clone HEAD should match the laptop's
 `git rev-parse HEAD`; a difference is a warning, not a failure.
+
+## File integrity
+
+Run **last** on the node, after § "Fork write access", so the database
+records the hardened box with its deploy key, not the box halfway through.
+
+**Goal.** A file-integrity database describes the node's system files as the
+baseline left them, and its hash is recorded off the node. A later check can
+then tell an unexplained change from an explained one, and can tell when the
+database itself was rewritten.
+
+**Fact.** The integrity tool is probe-on-demand presence, not a
+`system_facts` key: nothing branches on which tool it is
+(`conventions` skill's `references/distro-agnosticism.md` Rule 6). Record it
+in the open map as `system_facts.capabilities.<tool>: present`. The package
+comes from § "Package installation", never from upstream source, so
+`/node-maintenance` keeps it patched.
+
+**Deriving an unseen tool.** A tool serves this outcome when it offers all of
+the following:
+
+1. An **init** that writes a database of the configured paths.
+2. A **check** that compares live files against the database, read-only, and
+   exits non-zero when something changed.
+3. An **update** (re-base) that writes a new database from the live state.
+4. **Exclusion rules** in its config.
+
+Ask the tool's own config where it reads and writes its database. Never
+assume a path, because the input and output database names differ between
+packagings of the same tool, and some packagings wrap init in a helper
+script. Promote the freshly written output database to the input name the
+config declares.
+
+**Exclusions** go in the tool's include directory when its config has one.
+Otherwise they go in a marker-delimited block in the main config, the same
+shape § "SSH lockdown ordering" uses for an sshd with no drop-in directory.
+Exclude what changes by design:
+
+- `doccap`'s container storage (`~doccap/.local/share/containers`) and cache
+  (`~doccap/.cache`)
+- the fork working copy (`~doccap/<repo>`)
+- log stores and the journal
+- the tailnet daemon's state directory, which rotates its own keys
+
+Keep `~doccap/.ssh`, `~doccap/.config` (quadlets and user units),
+`/etc/drydocc`, and `/etc` as a whole in scope. Changes there are exactly
+what a later check exists to surface. The check explains the legitimate ones
+from the journal.
+
+Init can take minutes on a slow disk or an emulated board. Run it under
+`node-exec`'s lingering contract, not as a bare SSH command a dropped
+connection would kill.
+
+```bash
+# after init: hash the database the tool will read from now on
+sudo sha256sum "${INTEGRITY_DB}" | awk '{print "sha256:"$1}'
+```
+
+**Verification.** Run the check immediately after init. It must report no
+changes. A change reported here means something is still writing to a path
+in scope. Exclude it if it changes by design, or find out why it is
+changing, then re-init. Never record a database whose first check is
+already dirty.
+
+**Record.** `hardening.file_integrity: enabled`, and
+`system_facts.capabilities.<tool>: present`. Journal the database path and
+its `sha256:` hash. The journal entry is the off-node record that
+`/node-maintenance`'s `file-integrity-verified` item compares against,
+because the database on the node could be rewritten along with the files it
+describes.
+
+#### Observed dialects — evidence, not the supported list
+| tool | init | promote | check | update | verified on | date |
+|---|---|---|---|---|---|---|
+| aide 0.19 | `sudo aide --init -c /etc/aide.conf`, under lingering (7 s on a native guest). `/etc/aide.conf` has no include directory, so exclusions go in the marker-delimited block, followed by `sudo restorecon /etc/aide.conf` under enforcing selinux and `sudo aide --config-check` | `sudo mv -f /var/lib/aide/aide.db.new.gz /var/lib/aide/aide.db.gz` (`database_out` → `database_in` in the config) | `sudo aide --check -c /etc/aide.conf`, exit 0 when clean | `sudo aide --update`, then the same promote. Not yet exercised | lab, Fedora 44 x86_64 (fresh bootstrap) | 2026-10-14 |
 
 ## SSH-key cut-over routine (Phase 2)
 

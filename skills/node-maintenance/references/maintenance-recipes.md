@@ -13,7 +13,7 @@ live in the `conventions` skill; this file assumes them.
 
 ## Contents
 
-- [The posture catalog](#the-posture-catalog) — the eleven outcomes, closed set
+- [The posture catalog](#the-posture-catalog) — the nineteen outcomes, closed set
 - [The inventory join](#the-inventory-join) — what is read, and what it decides
 - [The bundled assessment probe](#the-bundled-assessment-probe) — one read-only
   round trip
@@ -29,6 +29,8 @@ live in the `conventions` skill; this file assumes them.
 - [Backup coverage and proof](#backup-coverage-and-proof)
 - [Credential rotation windows](#credential-rotation-windows)
 - [Tailnet reachability](#tailnet-reachability)
+- [Security audit](#security-audit) — the eight review items; each node is its
+  own baseline
 - [Telemetry sampling](#telemetry-sampling)
 - [Baselines and anomalies](#baselines-and-anomalies)
 - [Risk and cost classification](#risk-and-cost-classification)
@@ -41,7 +43,7 @@ live in the `conventions` skill; this file assumes them.
 
 ## The posture catalog
 
-Eleven outcomes. The set is **closed** — a fork cannot add an id, because an id
+Nineteen outcomes. The set is **closed** — a fork cannot add an id, because an id
 without a derivation and a verification here is a promise nothing can keep.
 Adding one is a change to this file and the skill that reads it.
 
@@ -62,6 +64,14 @@ reports `n/a` and costs nothing.
 | `credentials-within-rotation-window` | no declared secret is past its stated rotation window | ≥1 secrets manifest declares `rotates:` | **reports** → `secrets` |
 | `resources-within-baseline` | every container's CPU and memory behave the way its own baseline says they do | ≥1 active use-case declares containers | **reports**; acts only on an accepted re-base |
 | `logs-within-baseline` | no container's error output has risen above its own baseline | ≥1 active use-case declares containers | **reports**; acts only on an accepted re-base |
+| `node-hardening-holds` | live firewall, fail2ban, sshd and kernel state still match what `hardening.*` claims | any of those `hardening.*` fields is not `unknown` | **reports** → `/bootstrap-node` |
+| `access-reviewed` | no unexpected root-equivalent, passwordless or key-holding account, and no unreviewed sudo rule | always | **reports** |
+| `privileged-files-within-baseline` | the setuid/setgid and world-writable sets are the ones last accepted | always | **reports**; re-base on acceptance |
+| `persistence-reviewed` | every scheduled job is framework-owned or already seen | always | **reports**; re-base on acceptance |
+| `exposure-matches-declaration` | every non-loopback listener is declared | always | **reports** |
+| `auth-events-reviewed` | no unexpected login or privilege use since the last sweep | always | **reports** |
+| `file-integrity-verified` | every file change since the last re-base is explained, against a trusted database | `hardening.file_integrity` is `enabled` | **reports**; acts only on an accepted re-base |
+| `build-toolchain-absent` | no compiler or build system is installed | always | **reports** |
 
 **Acts** means this skill owns the remedy and will perform it on acceptance.
 **Reports** means another command owns it; the finding ends in a ready-to-paste
@@ -85,8 +95,9 @@ already exists; none of it is collected specially for maintenance.
 | `nodes/<node>/use-cases/*.secrets.yaml` | key names, `rotates`, `purpose` | `credentials-within-rotation-window` |
 | `nodes/<node>/use-cases/*.audit.yaml` | the `telemetry:` block only | thresholds, exclusions, and the baseline both telemetry items judge against |
 | `nodes/notify.yaml` + node layer | presence, event routing | whether the rendered automation publishes, and what |
-| `nodes/<node>/node.yaml` | `system_facts.*`, `hardening.*`, `tailscale_hostname`, `detected` | dialect selection, and the applicability of the security items |
-| `nodes/<node>/journal/*.md` | most recent `scope: maintenance` entry | how long since the last sweep |
+| `nodes/<node>/node.yaml` | `system_facts.*`, `hardening.*`, `tailscale_hostname`, `ssh.public_key_fingerprint`, `detected` | dialect selection, the applicability of the security items, and which key on `doccap` is the admin's |
+| `nodes/<node>/maintenance.yaml` (skill-written half) | `security_baseline` | what each security-audit item compares against |
+| `nodes/<node>/journal/*.md` | most recent `scope: maintenance` entry; every entry since the last integrity re-base | how long since the last sweep; the recorded integrity hash and the paths framework commands wrote |
 
 Two rules govern the join:
 
@@ -120,10 +131,18 @@ sibling node's state is probed, written, or connected to.
 
 ## The bundled assessment probe
 
-One read-only round trip, issued as a single `NODE_RUN` with a `bash -s`
-heredoc, following the shape `/audit-use-case`'s Tier 1 probe uses. It emits
-`<key>=<value>` lines on stdout and nothing else, so a partial failure inside
-the script costs one key rather than the whole assessment.
+One read-only round trip, issued as a single `NODE_RUN` that follows the
+shape of `/audit-use-case`'s Tier 1 probe. It emits `<key>=<value>` lines on
+stdout and nothing else, so a partial failure inside the script costs one key
+rather than the whole assessment.
+
+**Pass the script as an argument, with stdin from `/dev/null`**
+(`bash -c '<probe>' probe </dev/null`), never as a `bash -s` heredoc. With
+the heredoc, the script *is* stdin, so any command inside it that reads stdin
+consumes the rest of the script, and the keys after it silently go missing. A
+package manager asking to import a repository key is the case on record. Also
+give that query its own non-interactive "assume no" option, so a prompt
+declines instead of waiting.
 
 Header assignments the agent substitutes before sending:
 
@@ -133,6 +152,10 @@ IMAGES="<space-separated pinned image references>"
 PKG_CHECK="<confirmed update-check idiom — see the package-update contract>"
 BAN_READ="<confirmed ban-ledger read idiom — see the ban-ledger contract>"
 TLS_PATHS="<space-separated candidate certificate paths>"
+SSHD_EFFECTIVE_CONFIG_CMD="<node.yaml:ssh.effective_config_cmd, or empty>"
+INTEGRITY_PROBES="<tool|db-path-cmd pair, as onboard-recipes.md's probe takes it>"
+AUTH_READ="<confirmed auth-event read idiom — see § \"Authentication events are reviewed\">"
+OWNER_QUERY="<confirmed package owner query, or empty>"
 ```
 
 Every unresolved substitution is left **empty**, never guessed. An empty
@@ -162,6 +185,18 @@ Keys the probe emits:
 | `tsamples:<slug>` | `<line count>\|<newest sample epoch>`, or `absent` | both telemetry items |
 | `telemetry_timer` | `active` / `inactive` / `absent` | both telemetry items |
 | `notify_helper` | `present` / `absent` | whether the automation can publish |
+| `sshd_*`, `sysctl_*`, `sysctl_dropin`, `ts_advertises_routes`, `firewall_status`, `fail2ban` | as `onboard-node/references/onboard-recipes.md` § "Inventory probes" emits them | `node-hardening-holds` |
+| `uid0:<account>`, `emptypw:<account>`, `shell:<account>` | `1` per account, or `no-probe` | `access-reviewed` |
+| `akeys:<account>` | comma-separated key fingerprints | `access-reviewed` |
+| `sudoers_valid` | `yes` / `no` / `no-probe` | `access-reviewed` |
+| `sudo_rule:<file>:<line>` | rule kind (`nopasswd`, `shell`, `wildcard`, `all`) | `access-reviewed` |
+| `suid:<path>`, `sgid:<path>`, `ww:<path>` | `1`, or `owned:<package>` when `OWNER_QUERY` claims it | `privileged-files-within-baseline` |
+| `persist:<identifier>` | `1` | `persistence-reviewed` |
+| `listen:<proto>:<addr>:<port>` | owning process name | `exposure-matches-declaration` |
+| `auth:<counter>` | count since `last_maintenance`, or `no-probe` | `auth-events-reviewed` |
+| `auth_window_from` | oldest timestamp the log source still holds | `auth-events-reviewed` |
+| `toolchain:<binary>` | its path | `build-toolchain-absent` |
+| `integrity_db_hash` | `sha256:<hex>`, or `absent` | `file-integrity-verified` |
 
 The probe **never writes**, never installs, and never restarts anything. A node
 that is unreachable produces no keys at all; the run continues against the
@@ -228,8 +263,8 @@ dialects below.
 
 | package_manager | refresh + query | apply | reboot signal | verified on | date |
 |---|---|---|---|---|---|
-<!-- No rows yet: this contract has not been exercised against a live node.
-     Add a row the first time a triple is derived and verified on real
+| dnf5 | `dnf -q --assumeno check-upgrade </dev/null`, run as non-root. Its metadata refresh is implicit. Exit 0 = nothing pending, 100 = pending. Add `--security` for the security-relevant subset. A non-root query prompts to import a third-party repo key, and `--assumeno` declines it | not yet exercised | `dnf -q needs-restarting` (exit 0 = not needed) | lab, Fedora 44 x86_64 (report-only sweep) | 2026-10-14 |
+<!-- Add a row the first time a triple is derived and verified on real
      hardware, per the derivation rules in
      conventions/references/distro-agnosticism.md. A missing row means
      nobody has been there yet — never that a manager is unsupported. -->
@@ -282,9 +317,7 @@ are volatile operational state, and the journal entry carries the narrative.
 
 | capability | status query | per-jail query | verified on | date |
 |---|---|---|---|---|
-<!-- No rows yet — unexercised against a live node. The framework's baseline
-     installs fail2ban, so that is the expected first row; it is not the
-     only legal one. -->
+| fail2ban | `sudo -n fail2ban-client status` | `sudo -n fail2ban-client status <jail>` (currently/total banned, total failed) | lab, Fedora 44 x86_64 (report-only sweep) | 2026-10-14 |
 
 ---
 
@@ -590,6 +623,277 @@ node reached on its fallback port is a supported shape.
 
 ---
 
+## Security audit
+
+Eight items review how the node has changed since it was hardened. Seven of
+them **report only**. `file-integrity-verified` acts only on an accepted
+re-base. Rules that hold for all eight:
+
+- **Each node is its own baseline.** An item compares the live state with
+  `security_baseline` in the node layer's skill-written half
+  (`conventions/references/maintenance-manifest.md`). There are no expected
+  counts per system: a stock install's number of privileged binaries says
+  nothing about this box. With no baseline yet, the first run records one and
+  **lists everything it recorded** in the report. A baseline nobody looked at
+  only proves the node has not changed since it was already wrong.
+- **A rebuilt or replaced box starts over.** The baseline described another
+  box when either of these holds:
+  - `node.yaml:identity.machine_id_hash` differs from what the baseline was
+    recorded against, or
+  - a `/bootstrap-node` or `/onboard-node` journal entry newer than
+    `security_baseline.recorded` initialised a new integrity database.
+
+  Say so in the report, and record a fresh baseline the way a first run does,
+  listing all of it. Comparing a new box with the old one's state only
+  produces alarms nobody can act on.
+- **Re-basing is the admin's.** `[s] accept <id>` (§ "The findings report")
+  writes the current state as the new baseline for one item, after its
+  changes have been shown. It is never part of `[a]` and never runs
+  unattended, whatever the item's `mode`.
+- **Nothing is removed.** No account is locked, no privilege bit cleared, no
+  scheduled job deleted, no package uninstalled. Each of those is a judgement
+  about this box's purpose, and the admin makes it on the node.
+- **Framework-owned state is exempt by name, and the report says so.** The
+  exemptions are `/etc/sudoers.d/doccap`, the `doccap` account, units named
+  `drydocc-*`, the quadlets of declared use-cases, and the admin key whose
+  fingerprint `node.yaml:ssh.public_key_fingerprint` records. A rule that
+  exempts silently is indistinguishable from a rule that missed something.
+- **Never journal or commit** a password hash, key material, a source
+  address, a file's contents, or a scheduled job's command line. That last
+  one can hold credentials. Record paths, local account names, unit names,
+  counts, and `sha256:` digests. Show the full detail on the admin's terminal
+  during the run and nowhere else.
+- **Privileged reads use `sudo -n`.** A refused read emits `no-probe` for
+  that key, never an empty list. An unreadable shadow database is not a node
+  without passwords.
+
+### Hardening still holds
+
+**Goal.** What `node.yaml:hardening` claims is what the node is doing right
+now: the firewall is enforcing, fail2ban is running, and the effective sshd
+config and every drydocc kernel key match the baseline.
+
+No dialect of its own. The probe emits the same `sshd_*`, `sysctl_*`,
+`sysctl_dropin` and `ts_advertises_routes` keys that
+`onboard-node/references/onboard-recipes.md` § "Inventory probes" defines,
+plus the firewall status and fail2ban's unit state. Each field is classified
+by that file's § "Hardening classification rules". The classification lives
+there once, not here. `file_integrity` is judged by
+`file-integrity-verified` and `tailscale` by `tailnet-healthy`.
+
+A field that classifies `drift` against a profile that says it is at
+baseline is the finding. The remedy is always `/bootstrap-node <node>`
+(audit-&-repair). This item never rewrites a drop-in, re-applies sysctl, or
+writes `node.yaml:hardening`.
+
+### Access is reviewed
+
+**Goal.** Nobody can act as root or log in in a way the baseline does not
+know about.
+
+No dialect. The account and sudo databases are read through their own tools
+(`getent`, `visudo`), never by parsing a file whose location could differ.
+
+| check | probe | finding |
+|---|---|---|
+| UID 0 | `getent passwd \| awk -F: '$3==0{print $1}'` | any account other than `root`: **critical** |
+| empty password | `sudo -n getent shadow \| awk -F: '$2==""{print $1}'`. Emit names only, never the second field | any name: **critical**. A locked (`!` or `*`) field is fine |
+| interactive accounts | `getent passwd` accounts whose shell is listed in `/etc/shells` and is not a no-login shell | any name not in `security_baseline.accounts.login_shell` |
+| key holders | every account with a non-empty authorized-keys file, at the path(s) sshd's effective `authorizedkeysfile` names | any account not in `security_baseline.accounts.authorized_keys`. `root` holding keys is a finding even though root login is off |
+| `doccap`'s keys | `ssh-keygen -lf` over each line of `doccap`'s authorized-keys file | any fingerprint other than `ssh.public_key_fingerprint` |
+| sudoers syntax | `sudo -n visudo -c` | non-zero exit: **critical**, because the next sudo edit can lock `doccap` out |
+| sudo rules | every rule in the main sudoers file and its include directory, except `/etc/sudoers.d/doccap` | `NOPASSWD`; a command spec that is a shell, an editor, a pager or an interpreter; a wildcard in a command path; an `ALL` command spec for anyone except the framework drop-in. Report the file, the line number and the rule kind. Two kinds of `ALL` rule are **information, not findings**: one granting `root` (who already has every right), and one granting a group with no members (`getent group`). A member joining that group later turns it into a finding on the next sweep |
+
+`doccap`'s passwordless rule is the one deliberate exception. Unattended
+timers and agents need sudo without a prompt, and the account is reachable
+only by key. Every other passwordless rule is somebody else's, and nobody
+reviewed it.
+
+`sudo -l -U <account>` gives each interactive account's effective rights,
+which can come from a group the rule scan cannot see. Show it for every
+account the scan flagged.
+
+### Privileged files are within baseline
+
+**Goal.** The set of setuid and setgid files, and the set of world-writable
+paths, is the one the admin last accepted.
+
+No dialect. Scan every **local, block-backed** filesystem: `/` and every
+other mount point the mount table backs with a local block device, each
+with `-xdev`. Skip pseudo, network and overlay filesystems. A separate `/var`
+or `/home` is where a planted binary would hide from a scan of `/` alone.
+
+```bash
+# per local mount point $M
+sudo -n find "$M" -xdev \( -perm -4000 -o -perm -2000 \) -type f -print 2>/dev/null
+sudo -n find "$M" -xdev -perm -0002 ! -type l \
+  ! \( -type d -perm -1000 \) -print 2>/dev/null       # sticky dirs (/tmp) are by design
+```
+
+Exclude `doccap`'s container storage (`~doccap/.local/share/containers`).
+Image layers carry their own setuid binaries, and those are the images'
+business, judged by `container-images-current`.
+
+| change | verdict |
+|---|---|
+| a setuid/setgid path not in the baseline | DRIFT. Note "package-owned" when the package manager's owner query claims the path |
+| any **world-writable** setuid/setgid file | **critical**, whatever the baseline says |
+| a world-writable path not in the baseline | DRIFT |
+| a baseline path that is gone | reported, not a finding |
+
+This item tracks **which** paths carry the bits. Whether a file's contents
+changed is `file-integrity-verified`'s job.
+
+#### Observed dialects — evidence, not the supported list
+| package_manager | owner query | verified on | date |
+|---|---|---|---|
+| dnf5 | `rpm -qf --qf '%{NAME}' <path>` | lab, Fedora 44 x86_64 (report-only sweep) | 2026-10-14 |
+
+### Persistence is reviewed
+
+**Goal.** Every scheduled job on the node is either the framework's own or
+one the admin has already seen.
+
+**Fact.** None. The scheduler's own tools are asked, never their spool
+directories, since where a scheduler keeps its spool varies:
+
+- **Timers:** system timers, and `doccap`'s user timers, through its user
+  manager (`systemctl --user` with `XDG_RUNTIME_DIR` set for `doccap`).
+  Lingering keeps that manager running.
+- **cron**, when a cron implementation is present: the system crontab, the
+  drop-in directory and the periodic directories, plus `crontab -l -u <account>`
+  for every account. The per-account form works whatever the spool path is.
+- **One-shot jobs**, when an `at` implementation is present: its queue.
+
+Each entry gets a stable identifier: `timer:<unit>`, `user-timer:<unit>`,
+`cron-file:<path>`, `crontab:<account>:sha256:<digest of the entry>`, or
+`at:<account>:sha256:<digest>`. The digest stands in for the command line,
+which is never recorded. An entry that is neither framework-owned (a
+`drydocc-*` unit) nor in `security_baseline.persistence` is DRIFT. Show its
+full text on the terminal, and only there.
+
+**Deriving an unseen scheduler.** A scheduler serves this outcome when it can
+list its jobs per account, read-only. A scheduler that cannot list its jobs
+emits `persist=no-probe`. A scheduled job nobody can list is the finding.
+
+#### Observed dialects — evidence, not the supported list
+| scheduler | list query | verified on | date |
+|---|---|---|---|
+| systemd timers | `systemctl list-timers --all --no-legend` (system); `systemctl --user list-timers --all --no-legend` as `doccap` (user). No cron or `at` was installed on that box | lab, Fedora 44 x86_64 (report-only sweep) | 2026-10-14 |
+
+### Exposure matches declaration
+
+**Goal.** Every socket listening beyond loopback is one the framework
+expects: the fallback SSH port, the tailnet daemon, a port an active
+use-case declares, or one in `security_baseline.listeners`.
+
+No dialect. `ss -lntupH`, the same read § "Adoption variant" in
+`bootstrap-node/references/hardening-recipes.md` uses. A listener on a
+loopback address is out of scope. One bound to the wildcard address is
+exposed on every interface, which is wider than one bound to the tailnet
+address only. Say which.
+
+An undeclared listener is DRIFT. Whether the firewall lets it through
+decides the severity. **On the client surface**, the run also connects from
+the client to each undeclared TCP listener on the node's reachable address:
+
+- answers from off-node: **critical**
+- refused or filtered: DRIFT
+
+UDP cannot be confirmed this way. Say so rather than calling it closed.
+Per-use-case rule drift is `/audit-use-case`'s. This item reports only
+listeners **no** declaration accounts for.
+
+### Authentication events are reviewed
+
+**Goal.** Since the last sweep, nobody got in, or got root, by a path the
+baseline does not expect.
+
+**Fact.** The log source is probe-on-demand, not a `system_facts` key.
+Prefer the journal when it is persistent and its oldest entry predates
+`last_maintenance`. Otherwise use the file the system log daemon writes the
+authentication facility to, asked from that daemon's own config. Select by
+the **program identifier** (`sshd`, `sudo`, the tailnet daemon), never by a
+unit name, since the SSH unit's name varies.
+
+Counts since `last_maintenance`, never content:
+
+| counter | finding |
+|---|---|
+| sources with a burst of failures followed by a success | any: **critical**. Record the count, never the address |
+| accepted logins as `root` | any: **critical**, because root login is off |
+| accepted logins by an account other than `doccap` | any. Name the account |
+| sudo by an account other than `doccap` | any. Name the account |
+| account-creation events | any. Cross-check them against `access-reviewed`'s account diff |
+| tailnet SSH sessions | reported, not a finding. They bypass sshd entirely and log under the tailnet daemon |
+
+A window the log no longer covers is reported with the date it reaches
+back to. A rotated-away window is not a clean window.
+
+#### Observed dialects — evidence, not the supported list
+| log source | query | verified on | date |
+|---|---|---|---|
+| persistent journal | `sudo -n journalctl -o short-iso -t sshd -t sshd-session -t sudo -t useradd --since <last_maintenance>`. Accepted logins log under `sshd-session` on current OpenSSH, so select both identifiers | lab, Fedora 44 x86_64 (report-only sweep) | 2026-10-14 |
+
+### File integrity is verified
+
+**Goal.** Every change to a file in scope since the last re-base is
+explained, and the database the check trusts is the one whose hash left the
+node.
+
+**Fact.** `system_facts.capabilities.<tool>`, recorded by § "File integrity"
+in `bootstrap-node/references/hardening-recipes.md`. That section holds
+the tool's init, check and update idioms. This one reuses them and derives
+nothing new.
+
+1. **Trust the database first.** Hash it and compare the result with the
+   newest recorded hash: `security_baseline.integrity_db_hash`, cross-checked
+   against the journal entry that wrote it. A mismatch is **critical**: the
+   database was rewritten outside the framework. Stop here, because a check
+   against an untrusted database proves nothing. On the first sweep
+   `security_baseline` is still `null`, so the journal entry from
+   `/bootstrap-node` or `/onboard-node` that initialised the database is the
+   only record. Take the hash from that entry, and record it in the manifest
+   once it matches.
+2. **Check.** Run the tool's check through `NODE_RUN_LINGER` as
+   `dd-maintenance-integrity`, since it can run for minutes.
+3. **Explain each changed path.** A change is explained when
+   - the package manager changed the package that owns it since the last
+     re-base (its own history or owner query, the same dialect as
+     `privileged-files-within-baseline`), or
+   - a journaled framework command since the last re-base names it: quadlets,
+     env files, sshd and sysctl drop-ins, the firewall store.
+
+   Anything else is unexplained and is DRIFT. Report paths only.
+4. **Re-base on acceptance** (`[s] accept file-integrity-verified`). Show
+   every changed path first, unexplained ones at the top. Then run the tool's
+   update, promote the new database, hash it, and record the hash in the
+   manifest and this run's journal entry. Risk `low`: it writes the node's
+   database and nothing else.
+
+**Verification.** After a re-base, an immediate check reports no changes.
+
+**Record.** `security_baseline.integrity_db_hash` and `rebased.<id>`. The
+journal names the hash and the count of explained and unexplained paths.
+
+### No build toolchain is installed
+
+**Goal.** The node carries no compiler or build system. On a box that only
+runs containers, a toolchain mainly serves someone building something the
+admin did not.
+
+No dialect: `command -v` over the candidates `cc`, `gcc`, `g++`, `c++`,
+`clang`, `make`, `cmake`, `ld` and `as`. Any hit is DRIFT, reported with its
+path. When the package manager can say why the package is installed
+(explicitly, or as a dependency), say that too. Interpreters are listed for
+information, not as findings: `python3` is **exempt**
+(`system_facts.capabilities.python3` backs probe parsing), and so are others
+a package depends on. This item never removes anything, because removing a
+package on an adopted box can take a service with it. A node that legitimately
+builds things turns the item `off` with a `note`.
+
+---
+
 ## Telemetry sampling
 
 No dialect: podman, journald, and systemd timers are target shape. The only
@@ -793,8 +1097,8 @@ degraded.
 
 | Risk | Meaning | Items |
 |---|---|---|
-| `none` | read-only, or writes only repo state | ban review, backup coverage, credential windows, tailnet, writable-layer growth, telemetry evaluation, baseline re-base |
-| `low` | changes node state, no service interruption | image pull without restart, log vacuum, run-log and samples rotation, fact write-back, rendering the telemetry sampler |
+| `none` | read-only, or writes only repo state | ban review, backup coverage, credential windows, tailnet, writable-layer growth, telemetry evaluation, baseline re-base, every security-audit review and its re-base |
+| `low` | changes node state, no service interruption | image pull without restart, log vacuum, run-log and samples rotation, fact write-back, rendering the telemetry sampler, file-integrity re-base |
 | `restart` | one or more units restart; that use-case is briefly unavailable | image refresh with restart, certificate renewal with reload |
 | `reboot` | the node goes down and comes back | package updates that set the reboot signal |
 
@@ -838,15 +1142,29 @@ Maintenance posture for <node> — last sweep <date> (<N> days ago)
 | credentials-within-rotation-window| report | UNKNOWN | node unreachable; repo-only assessment | none    | none     |
 | resources-within-baseline         | report | DRIFT   | nextcloud-app mem-growth +9%/day       | none    | none     |
 | logs-within-baseline              | report | N/A     | matrix: baseline possible 2026-09-17   | none    | none     |
+| node-hardening-holds              | report | DRIFT   | fail2ban inactive; profile says enabled | none   | none     |
+| access-reviewed                   | report | DRIFT   | 1 sudo rule NOPASSWD in sudoers.d/backup | none  | none     |
+| privileged-files-within-baseline  | report | OK      | 31 setuid/setgid, 0 world-writable new | none    | none     |
+| persistence-reviewed              | report | DRIFT   | 1 crontab entry for 'deploy' not seen before | none | none   |
+| exposure-matches-declaration      | report | OK      | 4 listeners, all declared              | none    | none     |
+| auth-events-reviewed              | report | OK      | 212 failures, 0 burst-then-success     | none    | none     |
+| file-integrity-verified           | report | DRIFT   | 14 changed: 13 package-explained, 1 not | low    | none     |
+| build-toolchain-absent            | off    | SKIPPED | disabled here: CI runner builds images | —       | —        |
 
 Posture deviations from the fork-wide bar:
-  logs-bounded          auto  (promoted here; fork-wide is report)
-  tls-material-valid    off   ("upstream-only; edge proxy terminates TLS")
+  logs-bounded            auto  (promoted here; fork-wide is report)
+  tls-material-valid      off   ("upstream-only; edge proxy terminates TLS")
+  build-toolchain-absent  off   ("CI runner builds images")
 
 Delegated — these are not this command's to fix:
   /restore-use-case nextcloud --test   backup never proven restorable
   /backup-use-case matrix              active use-case, no backup strategy
   /bootstrap-node <node>               hardening says fail2ban enabled; service is not running
+
+Security review — the admin's to judge, on the node:
+  access-reviewed           /etc/sudoers.d/backup:1  NOPASSWD rule
+  persistence-reviewed      crontab:deploy:sha256:3f1c…  first seen this run
+  file-integrity-verified   /etc/hosts  changed, not explained by a package or a journaled command
 ```
 
 Verdicts are `OK`, `DRIFT`, `UNKNOWN` (probe failed or node unreachable),
@@ -864,6 +1182,7 @@ Act on which findings?
   [l] logs                      — vacuum journal, rotate run logs (low, none)
   [f] facts                     — re-probe and write system_facts (low, none)
   [r] rebase <slug>             — accept current behaviour as normal (none, none)
+  [s] accept <id>               — accept a security item's current state as its baseline (none; low for integrity)
   [n] none                      — report only, change nothing
   [v] view                      — show the exact commands for an item first
 
@@ -879,6 +1198,12 @@ Delegated findings are not in this list; run the commands above yourself.
   recent full window per § "Baselines and anomalies". Never part of `a`, and
   never offered for more than one use-case per keypress: accepting a new normal
   is a judgement about one service.
+- **`s`** — re-base one security-audit item (§ "Security audit"). List every
+  change it would accept first, and the critical ones first of all. Never
+  part of `a`, and one item per keypress. A **critical** finding (an extra
+  UID 0, an empty password, a world-writable setuid file, a rewritten
+  integrity database, a burst-then-success) cannot be accepted this way. The
+  admin fixes it on the node, and the next sweep sees it gone.
 - **`i`/`p`/`l`/`f`** — one item. Offered only when that item produced a
   finding and its `mode` is not `off`.
 - **`p`** applies updates and then **reports** the reboot request. It never
@@ -1030,6 +1355,12 @@ sweep that bounds every other log bounds its own.
   directory.
 - **Extend the posture catalog per fork.** The catalog is closed. An outcome
   without a derivation and a verification is a promise nothing can keep.
+- **Remove what a security review finds.** No account is locked, no
+  privilege bit cleared, no scheduled job deleted and no package removed.
+  Those are judgements about the box's purpose, and the admin makes them.
+- **Run a rootkit scanner or score the node with a third-party audit tool.**
+  The security items are outcomes this file derives and verifies. A
+  scanner's signatures and a tool's score are neither.
 - **Prune undeclared data.** Writable-layer growth and undeclared volumes are
   reported and handed to `/audit-use-case`; deleting data no declaration
   describes is not a maintenance task.

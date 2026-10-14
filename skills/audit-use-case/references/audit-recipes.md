@@ -19,8 +19,10 @@ want lingering, it does not belong in an audit.
 
 ### The bundled probe
 
-One `bash -s` heredoc, emitting stable `<key>=<value>` lines, in the shape
-`onboard-node` established. `$SLUG` is the use-case slug; `$CONTAINERS`,
+One bundled script, emitting stable `<key>=<value>` lines, in the shape
+`onboard-node` established, including how it is sent: as an argument, with
+stdin closed, never as a `bash -s` heredoc that a prompting command could
+swallow. `$SLUG` is the use-case slug; `$CONTAINERS`,
 `$NETWORKS`, `$VOLUMES` are space-separated names read from the doc's
 frontmatter; `$MIGRATION_UNIT` is the optional `unit:` line from the doc's
 `## Migration` section body. The three `FIREWALL_*` values come from

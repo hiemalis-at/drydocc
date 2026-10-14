@@ -26,3 +26,24 @@ automation_rendered_commit: 0000000
 last_maintenance: 2026-09-12T04:31:00Z
 last_maintenance_outcome: partial
 verified_auto: [logs-bounded]
+security_baseline:
+  recorded: 2026-09-12
+  machine_id_hash: "sha256:…"
+  suid_sgid:
+    - /usr/bin/chage
+    - /usr/bin/newgidmap
+    - /usr/bin/newuidmap
+    - /usr/bin/passwd
+    - /usr/bin/su
+    - /usr/bin/sudo
+  world_writable: []
+  persistence:                 # drydocc-* units are exempt by name, never listed
+    - timer:fstrim.timer
+    - timer:logrotate.timer
+  accounts:
+    login_shell: [root, doccap]
+    authorized_keys: [doccap]
+  listeners: []
+  integrity_db_hash: "sha256:…"
+  rebased:
+    file-integrity-verified: 2026-09-12

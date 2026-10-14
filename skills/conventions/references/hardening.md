@@ -8,10 +8,27 @@ Every `drydocc` node, after `/bootstrap-node` succeeds, reaches the following se
 
 ### User and Access Control
 
-- **Sudoer user `doccap`**: Unprivileged user created during bootstrap, with sudo privileges for specific operations (container management, systemd user service control, firewall rules).
+- **Sudoer user `doccap`**: Unprivileged user created during bootstrap, with passwordless sudo for any command (`/etc/sudoers.d/doccap`). This is deliberate: unattended timers and agents need sudo without a prompt, and the account is reachable only by key. It is the one passwordless rule the framework writes, and reviews exempt it by path.
 - **Root SSH disabled**: Direct SSH login as `root` is forbidden (`PermitRootLogin no`), set in the node's sshd configuration (`ssh.config_include_dir` when the server has a drop-in mechanism; edited in place when that field is `null`).
-- **Password SSH disabled**: Password-based SSH authentication is disabled for all users (`PasswordAuthentication no`). Only SSH public-key authentication is permitted.
+- **Password SSH disabled**: Password-based SSH authentication is disabled for all users, by both routes a password can take: the password method (`PasswordAuthentication no`) and keyboard-interactive, which PAM uses to ask for the same password (`KbdInteractiveAuthentication no`). Only SSH public-key authentication is permitted.
 - **Primary access via Tailscale**: After bootstrap, the admin connects via `tailscale ssh doccap@<tailscale_hostname>`. This is the primary access path and is secure by default (encrypted via WireGuard, authenticated via Tailscale's PKI).
+
+### SSH Session Policy
+
+- **No empty passwords, no X11 forwarding, public keys required**: the same
+  drop-in that carries the two lockdown lines above also refuses empty
+  passwords and X11 forwarding, and keeps public-key authentication on.
+- **Dead peers are dropped, idle sessions are not**: keepalive probes end a
+  session whose client stopped answering. An idle client that still answers
+  stays connected, because Remote-SSH and `node-exec` sessions sit idle on
+  purpose.
+- **No user allow-list**: sshd is not restricted to `doccap`. Adopted boxes can
+  have other key-holding admins, and cutting them off is not the framework's
+  call. `/node-maintenance` reports every account holding `authorized_keys`
+  instead.
+
+Exact lines and their read-back: `hardening-recipes.md` § "SSH lockdown
+ordering".
 
 ### Fallback SSH Access
 
@@ -42,6 +59,40 @@ per-tool commands.
   (ban after repeated failed attempts within a short window); see
   `hardening-recipes.md` § "fail2ban" for the exact idiom and thresholds.
 - **Use-case-specific jails**: Future use-cases may declare additional jails (e.g., a web app may declare a jail against its login endpoint). No schema field exists for this yet — not yet designed.
+
+### Kernel Parameters
+
+- **A drydocc sysctl drop-in** holds the kernel's network and
+  information-leak hardening: address-space randomisation, restricted kernel
+  pointers and kernel log, SYN cookies, and no ICMP redirects in either
+  direction.
+- **Packet forwarding is off unless something on the node needs it.** A
+  container engine whose networking forwards on the host, or a node that
+  advertises tailnet routes or offers itself as an exit node, keeps
+  forwarding on, and reverse-path filtering is loosened to match. The probe
+  that found the consumer is journaled as the reason. Adoption never turns
+  forwarding off under a running consumer.
+- **It does not touch other drydocc sysctl drop-ins.** The unprivileged-port
+  floor that `podman-quadlets` lowers on demand lives in its own file.
+
+Keys, derivation and verification: `hardening-recipes.md` § "Kernel
+hardening".
+
+### File Integrity
+
+- **A file-integrity database** is initialised once the box is hardened, so it
+  records the baseline state rather than the pre-hardening one. Container
+  storage, logs, and the fork's working copy are excluded, since they change
+  by design.
+- **Its hash leaves the node.** The database sits on the node and could be
+  rewritten along with the files it describes. The journal and the
+  maintenance manifest record its hash, and every check verifies that hash
+  first.
+- **The tool comes from the node's package manager**, like everything else
+  in the baseline, so `/node-maintenance` keeps it patched.
+
+Procedure: `hardening-recipes.md` § "File integrity". The recurring check is
+`/node-maintenance`'s `file-integrity-verified` item.
 
 ### Rootless Podman
 
@@ -77,9 +128,12 @@ Re-running `/bootstrap-node <node>` on an already-bootstrapped node will:
 1. Connect to the node as `doccap`.
 2. Query live state — the firewall tool's status (probe commands in
    `hardening-recipes.md` § Firewall), fail2ban's active state
-   (`hardening-recipes.md` § "fail2ban"), and root-login/password-auth via
-   `ssh.effective_config_cmd` when it is set, falling back to a live
-   connection attempt when that field is `null` (see `node-profile.md`).
+   (`hardening-recipes.md` § "fail2ban"), root-login/password-auth and the
+   session-policy lines via `ssh.effective_config_cmd` when it is set,
+   falling back to a live connection attempt when that field is `null` (see
+   `node-profile.md`), each kernel key's live value (`hardening-recipes.md`
+   § "Kernel hardening"), and the integrity database against its recorded
+   hash (`hardening-recipes.md` § "File integrity").
 3. Compare live state to declared state in `node.yaml:hardening`.
 4. If drift is found (e.g., the firewall shows disabled but `node.yaml` says enabled):
    - Log the discrepancy.
@@ -93,6 +147,11 @@ This ensures that manual configuration changes (e.g., an admin disables the fire
 `/onboard-node` performs the same classification when adopting an existing box;
 see its `references/onboard-recipes.md` § "Hardening classification rules" for
 the `aligned | drift | unknown` table both paths share.
+
+Between re-runs, `/node-maintenance`'s `node-hardening-holds` item reads the
+same live state on every sweep and reports any drift with the
+`/bootstrap-node <node>` invocation that repairs it. It never repairs the
+drift itself and never writes `node.yaml:hardening`.
 
 **Not `/audit-use-case`.** That command is use-case-scoped, never
 writes `node.yaml`, and never touches the node. Its only
@@ -113,6 +172,29 @@ The baseline state above represents a minimal but solid foundation. Future passe
   declared rotation window on every sweep; performing the rotation
   automatically, end to end, is still future work owned by the `secrets` skill.
 - **Compliance scanning** — CIS Benchmarks, SCAP, or custom checks.
+
+### Considered and rejected
+
+Recorded so they are not proposed again without new information:
+
+- **Rootkit scanners.** They match signatures, are noisy on container hosts,
+  and duplicate what the file-integrity check and the privileged-file diff
+  already catch.
+- **A third-party hardening score as a readiness gate.** A tool's score is
+  not an outcome the framework can derive or verify. Every baseline item
+  here is a live check instead.
+- **Installing audit tools from upstream source rather than the package
+  manager.** A tool outside the package manager is never patched by
+  `os-packages-current`.
+- **Removing compilers and interpreters.** Removing packages on an adopted
+  box is destructive, and `python3` is load-bearing
+  (`system_facts.capabilities.python3`). `/node-maintenance` reports a build
+  toolchain instead (`build-toolchain-absent`).
+- **Treating every passwordless sudo rule as a defect.** `doccap`'s
+  passwordless sudo is deliberate (see *User and Access Control* above).
+  Reviews exempt that one drop-in by path and report every other one.
+- **An idle-session timeout.** It would cut the long idle sessions that
+  Remote-SSH and `node-exec` rely on. Dead-peer keepalive is used instead.
 
 ## References
 
