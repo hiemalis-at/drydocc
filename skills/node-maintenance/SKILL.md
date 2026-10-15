@@ -155,14 +155,15 @@ the same day; that is the design, not a compromise.
    delegated findings as ready-to-paste invocations. Stop here if
    `--report-only`.
 
-7. **Execute accepted items.** Present the menu from that same section and act
-   only on what the admin accepts. Verify each item against its own
+7. **Execute accepted items.** Present the menu from that same section
+   `[decision: maintenance.act]` and act only on what the admin accepts. Verify each item against its own
    verification step before calling it done — an item that acted but did not
    verify is reported as failed, not as success. Two rules hold regardless of
    what was accepted:
 
-   - **Never reboot the node without a separate, explicit confirmation**, taken
-     after the package updates have been applied and verified.
+   - **Never reboot the node without a separate, explicit confirmation**
+     `[decision: maintenance.reboot]`, taken after the package updates have
+     been applied and verified.
    - **Never perform a delegated remedy.** Hardening repair, backup setup,
      restore proof and credential rotation are emitted as invocations of the
      command that owns them, and this command does not do them itself.
@@ -182,7 +183,7 @@ the same day; that is the design, not a compromise.
    § "Publishing an event", if the node has notification set up.
 
    After an item completes and verifies interactively, offer to promote it to
-   `mode: auto`. That success is exactly the evidence the promotion gate asks
+   `mode: auto` `[decision: maintenance.promote]`. That success is exactly the evidence the promotion gate asks
    for, and it is the only way an item becomes eligible for unattended running
    on this node.
 
@@ -195,9 +196,15 @@ the same day; that is the design, not a compromise.
 
    Render the telemetry sampler per § "Telemetry sampling" when either
    telemetry item is not `off` and at least one active use-case declares
-   containers, and enable it once the admin has accepted it in this run.
+   containers, and enable it once the admin has accepted it in this run
+   `[decision: maintenance.enable-sampler]`.
    Sampling is read-only, so it has no promotion gate. Purge it when both items
    are `off` or nothing is left to sample.
+
+8b. **Run an accepted integrity re-base now**, as the run's last write on
+   the node, per `references/maintenance-recipes.md` § "File integrity is
+   verified" step 4. It was accepted in step 7, but it waits until here so
+   the database includes what steps 7 and 8 just wrote.
 
 9. **Catch up the run log.** Read `/var/lib/drydocc/maintenance.runlog` for
    lines newer than `last_maintenance` and fold each into this run's journal

@@ -69,11 +69,12 @@ ssh:
 hardening:                     # each: enabled | disabled | unknown
   firewall: enabled            # whether a firewall is on — not which tool
   fail2ban: enabled
-  ssh_root_login: disabled     # should be disabled
+  ssh_root_login: disabled     # sshd refuses root AND root holds no authorized key
   ssh_password_auth: disabled  # should be disabled
   ssh_session_policy: enabled  # empty passwords, X11 forwarding, dead-peer keepalive
   kernel_hardening: enabled    # the drydocc sysctl drop-in holds live
   file_integrity: enabled      # an integrity database is initialised, its hash recorded
+  name_responders: disabled    # no LLMNR/mDNS responder answers beyond loopback
   tailscale: joined            # joined | deferred | unknown
 remote_ide:
   vscode_server: compatible      # compatible | incompatible | unknown
@@ -232,6 +233,14 @@ a field's name and enum do not convey.
   `system_facts`'s job. `unknown` means not yet verified.
   - **`tailscale`** — Set to `joined` only after `tailscale up` succeeds *and*
     the node's own status entry reports it online under that hostname.
+  - **`ssh_root_login`** — `disabled` when the server's effective config
+    refuses root **and** root holds no authorized key. A key nobody can use
+    today is one config edit away from being usable again. Bootstrap moves
+    root's keys aside rather than deleting them.
+  - **`name_responders`** — `disabled` when no link-local name responder
+    (LLMNR, mDNS) answers beyond loopback. A port a use-case declares for
+    such a responder is the recorded exception. The daemon that owned the
+    responder is recorded under `system_facts.capabilities`, not here.
   - **`ssh_session_policy`** — `enabled` when the server's effective config
     refuses empty passwords, refuses X11 forwarding, requires public-key
     authentication, and drops dead peers through keepalive probes. Idle

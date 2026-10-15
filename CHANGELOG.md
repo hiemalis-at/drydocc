@@ -8,6 +8,42 @@ version is 0, a minor release may change conventions or the command surface.
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-10-15
+
+### Hardening
+
+- `ssh_root_login: disabled` now also means that root holds no authorized
+  SSH key. `/bootstrap-node` moves root's keys aside to a dated file (never
+  deletes them) once the lockdown is verified, and journals their
+  fingerprints. Provisioning, cloud images and hosting providers often leave
+  such keys behind. `/onboard-node` does the same as part of the
+  `ssh_root_login` item, with the admin's approval.
+- A new baseline field, `name_responders: disabled`: no LLMNR or mDNS
+  responder answers beyond loopback. The responder is switched off in the
+  daemon that owns the listener, found by socket, not only blocked by the
+  firewall. Ordinary name resolution keeps working.
+- Nodes bootstrapped earlier pick up both on their next `/bootstrap-node`
+  audit & repair. `/node-maintenance`'s `node-hardening-holds` checks both.
+- `/onboard-node` initialises the file-integrity database as the last thing
+  it does on the box, after the fork clone. It first creates `doccap`'s
+  config directories, so the first check on an adopted box is clean.
+
+### Maintenance
+
+- `/node-maintenance`'s questions carry decision ids
+  (`maintenance.act`, `.reboot`, `.promote`, `.enable-sampler`), and
+  `/onboard-node`'s forwarding question does too
+  (`onboard.forwarding-consumer`), so lab scenarios can answer them.
+- An accepted file-integrity re-base (`[s] accept file-integrity-verified`)
+  now runs last in the sweep, after the maintenance automation is rendered.
+  Before, the new database missed the run's own files and the next check
+  flagged them.
+
+### Lab
+
+- Commissioned clones no longer get the lab's key for root. The lab reaches
+  them as `doccap`, and root keeps no key, as bootstrap left it.
+
 ## [0.2.0] - 2026-10-14
 
 ### Hardening
@@ -175,6 +211,7 @@ First public release.
 - Agent adapters for Claude Code and Mistral Vibe, behind one documented
   contract in `scripts/lab/agents/README.md`.
 
-[Unreleased]: https://github.com/hiemalis-at/drydocc/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/hiemalis-at/drydocc/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/hiemalis-at/drydocc/releases/tag/v0.3.0
 [0.2.0]: https://github.com/hiemalis-at/drydocc/releases/tag/v0.2.0
 [0.1.0]: https://github.com/hiemalis-at/drydocc/releases/tag/v0.1.0

@@ -28,6 +28,8 @@ provisioning lives in the sibling `provision-vm` skill.
 - [fail2ban](#fail2ban)
 - [Kernel hardening](#kernel-hardening) — the drydocc sysctl drop-in;
   packet forwarding derived from its consumers
+- [Link-local name responders](#link-local-name-responders) — LLMNR and mDNS
+  off at their owner, not only at the firewall
 - [Tailscale up](#tailscale-up)
 - [Lingering & identity file](#lingering--identity-file)
 - [Fork write access](#fork-write-access) — per-node deploy key; clone, git identity, push verification
@@ -557,9 +559,38 @@ same way as Step 4 — with the effective-config loop now expecting
 either is idempotent. The initial root session stays usable until the admin
 closes it.
 
-**Record.** `hardening.ssh_root_login: disabled`,
-`hardening.ssh_password_auth: disabled`, and
-`hardening.ssh_session_policy: enabled` once the Step 6 loop passes. When
+**Step 7 — retire root's authorized keys.** Only after Step 6 passes, so
+root login is already refused and `doccap`'s key is proven. Provisioning, a
+cloud image or a hosting provider often leaves keys for `root`. With root
+login off they serve nobody, but they are one config edit away from working
+again. Move the file aside rather than deleting it: the admin may need to
+know whose keys they were.
+
+```bash
+# over the doccap session, with sudo
+for f in $(sudo sh -c "${SSH_EFFECTIVE_CONFIG_CMD}" 2>/dev/null \
+             | awk '$1=="authorizedkeysfile"{for(i=2;i<=NF;i++) print $i}'); do
+  # expand the server's %h / %u tokens for root; skip a relative path's base
+  p="$(printf '%s' "$f" | sed -e 's#%h#/root#g' -e 's#%u#root#g' -e 's#%%#%#g')"
+  case "$p" in /*) ;; *) p="/root/$p" ;; esac
+  sudo test -s "$p" || continue
+  sudo ssh-keygen -lf "$p"                      # fingerprints → the journal
+  sudo mv "$p" "$p.drydocc-retired-$(date -u +%Y%m%d%H%M%S)"
+done
+```
+
+When `ssh.effective_config_cmd` is `null`, use the server's documented
+default location, `~/.ssh/authorized_keys`, and say in the journal that the
+list of locations was assumed, not asked. A retired file keeps its mode and
+owner. A re-run finds nothing left to move, which makes it idempotent.
+
+**Verification.** No location the server reads for root holds a non-empty
+file. Re-run the loop's `test -s` alone, and expect no hit.
+
+**Record.** `hardening.ssh_root_login: disabled` once Step 6 passes and
+Step 7 has left root no key. Also `hardening.ssh_password_auth: disabled`,
+and `hardening.ssh_session_policy: enabled` once the Step 6 loop passes. The
+journal names each retired file and its key fingerprints, never the keys. When
 `ssh.effective_config_cmd` is `null`, the connection proves only that key
 login works, not the session policy, so record `ssh_session_policy: unknown`
 and say so in the journal.
@@ -567,7 +598,9 @@ and say so in the journal.
 **Already-bootstrapped node.** An audit-&-repair run on a node locked down
 before the session-policy lines existed finds them missing. It rewrites the
 final single-port form directly (Step 5) and verifies it (Step 6). Steps 1–4
-exist only to move the port safely, and the port is already moved.
+exist only to move the port safely, and the port is already moved. Step 7
+runs as well, because a node locked down before Step 7 existed may still
+hold keys for root.
 
 ## Package installation
 
@@ -1083,7 +1116,52 @@ journal each key's value as it was before the write.
 #### Observed dialects — forwarding consumers; evidence, not the supported list
 | consumer | how it was recognised | verified on | date |
 |---|---|---|---|
+| rootful podman networks | a container started as root with a published port, on podman's default bridge network. Forwarding keys not written, so `ip_forward=1` stayed as found; `rp_filter` written `2`; the container still answered | lab, Fedora 44 x86_64 (`/onboard-node` of a hand-built box) | 2026-10-14 |
 | none | the rootful engine (podman) had no containers and only its default network; `tailscale debug prefs` reported `AdvertiseRoutes: null` and no exit node. Forwarding written `0`, `rp_filter` `1`; all 14 keys read back after `sysctl --system` | lab, Fedora 44 x86_64 (fresh bootstrap) | 2026-10-14 |
+
+## Link-local name responders
+
+**Goal.** No LLMNR or mDNS responder answers on any interface beyond
+loopback, unless an active use-case declares that port. The firewall dropping
+the traffic is a second layer and does not satisfy this goal. The goal is
+that nothing is listening.
+
+**Fact.** None new. The owner is found by **socket**, never by a name guess:
+the processes holding the LLMNR (5355, udp and tcp) and mDNS (5353/udp)
+listeners in `ss -lntupH`. Record each owner as
+`system_facts.capabilities.<daemon>: present`.
+
+**Deriving an unseen owner.** For each owner, ask:
+
+1. **Is responding a side job?** A general resolver that also answers
+   LLMNR or mDNS keeps resolving. Turn the responder off with its own config
+   switch, in a drydocc drop-in when the daemon reads a drop-in directory,
+   else a marker-delimited block in its main config (the shape § "SSH
+   lockdown ordering" uses). Then restart only that daemon.
+2. **Is responding its only job?** An mDNS daemon is the case. Disable and
+   stop its unit **and** any socket unit that would restart it. On
+   `/onboard-node` this needs the admin's approval: something on an adopted
+   box may browse for services through it.
+3. **Does an active use-case declare the port?** Leave it alone, and record
+   the slug in the journal as the exception.
+
+Resolution of ordinary names, the system's own lookups, must keep working
+afterwards. Check it before calling the step done.
+
+**Verification.**
+- `ss -lntupH` shows nothing on 5355 or 5353 beyond loopback, apart from
+  declared exceptions.
+- A name lookup that worked before still works.
+- After restarting the owning daemon, the listener stays gone: a config the
+  daemon ignored would bring it straight back.
+
+**Record.** `hardening.name_responders: disabled`, each owner under
+`system_facts.capabilities`, and journal what was switched off and where.
+
+#### Observed dialects — evidence, not the supported list
+| owner | switch | verified on | date |
+|---|---|---|---|
+| systemd-resolved (LLMNR on `0.0.0.0:5355` and `[::]:5355`, udp+tcp) | a side job: `printf '[Resolve]\nLLMNR=no\nMulticastDNS=no\n' \| sudo install -m 0644 /dev/stdin /etc/systemd/resolved.conf.d/90-drydocc-responders.conf && sudo systemctl restart systemd-resolved`. The stub on `127.0.0.53:53` keeps resolving | lab, Fedora 44 x86_64 (`/onboard-node` of a hand-built box) | 2026-10-14 |
 
 ## Tailscale up
 
@@ -1295,6 +1373,20 @@ Keep `~doccap/.ssh`, `~doccap/.config` (quadlets and user units),
 what a later check exists to surface. The check explains the legitimate ones
 from the journal.
 
+**Create the in-scope framework directories before init**, owned by
+`doccap`: `~doccap/.config`, `~doccap/.config/systemd/user` and
+`~doccap/.config/containers/systemd`. On a fresh bootstrap the rootless
+probe has usually created them already. On an adopted box `doccap` is new,
+and the first tool that touches its config after init would otherwise
+surface as an added directory. The 2026-10 lab onboarding hit exactly that.
+Later contents of these directories are changes the journal explains; the
+directories themselves are not.
+
+```bash
+sudo -u doccap -H install -d -m 0700 ~doccap/.config \
+  ~doccap/.config/systemd/user ~doccap/.config/containers/systemd
+```
+
 Init can take minutes on a slow disk or an emulated board. Run it under
 `node-exec`'s lingering contract, not as a bare SSH command a dropped
 connection would kill.
@@ -1320,7 +1412,7 @@ describes.
 #### Observed dialects — evidence, not the supported list
 | tool | init | promote | check | update | verified on | date |
 |---|---|---|---|---|---|---|
-| aide 0.19 | `sudo aide --init -c /etc/aide.conf`, under lingering (7 s on a native guest). `/etc/aide.conf` has no include directory, so exclusions go in the marker-delimited block, followed by `sudo restorecon /etc/aide.conf` under enforcing selinux and `sudo aide --config-check` | `sudo mv -f /var/lib/aide/aide.db.new.gz /var/lib/aide/aide.db.gz` (`database_out` → `database_in` in the config) | `sudo aide --check -c /etc/aide.conf`, exit 0 when clean | `sudo aide --update`, then the same promote. Not yet exercised | lab, Fedora 44 x86_64 (fresh bootstrap) | 2026-10-14 |
+| aide 0.19 | `sudo aide --init -c /etc/aide.conf`, under lingering (7 s on a native guest). `/etc/aide.conf` has no include directory, so exclusions go in the marker-delimited block, followed by `sudo restorecon /etc/aide.conf` under enforcing selinux and `sudo aide --config-check` | `sudo mv -f /var/lib/aide/aide.db.new.gz /var/lib/aide/aide.db.gz` (`database_out` → `database_in` in the config) | `sudo aide --check -c /etc/aide.conf`, exit 0 when clean | `sudo aide --update -c /etc/aide.conf`, then the same promote. Its exit status is the same change bitmask as the check (`5` = added + changed), not a failure. Verified by a `/node-maintenance` `[s] accept` re-base, 2026-10-15 | lab, Fedora 44 x86_64 (fresh bootstrap) | 2026-10-14 |
 
 ## SSH-key cut-over routine (Phase 2)
 

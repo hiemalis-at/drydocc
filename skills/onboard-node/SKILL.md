@@ -35,7 +35,9 @@ metadata:
     config when that fact is `null` — see `bootstrap-node`'s SSH lockdown
     recipe), the firewall tool's persistent store (per
     `system_facts.firewall.tool`), `/etc/sysctl.d/90-drydocc-hardening.conf`,
-    and the file-integrity tool's exclusions and database (installing the tool
+    root's authorized keys (moved aside, never deleted), the name resolver's
+    drop-in or a responder-only daemon's unit state, and the file-integrity
+    tool's exclusions and database (installing the tool
     through `system_facts.package_manager` when it is absent). Nothing is
     written on the box unless an `apply` choice elects it.
   - `/home/doccap/.ssh/drydocc-fork{,.pub}` and `/home/doccap/<repo>`
@@ -219,7 +221,7 @@ its owner.
 
 ### Phase 6 — Classify hardening
 
-13. For each of the eight `hardening.*` fields, apply the rules from
+13. For each of the nine `hardening.*` fields, apply the rules from
     `references/onboard-recipes.md` § "Hardening classification rules" against the
     probe output. Build a `drift_report` array; each entry carries
     `{field, current, desired, classification, bootstrap_anchor,
@@ -257,7 +259,8 @@ its owner.
       For `hardening.kernel_hardening`, the forwarding verdict comes from the
       probe, and an admin answer can add to it. Forwarding is never turned off
       under a consumer the probe or the admin named. The menu preamble shows
-      the verdict before the admin chooses.
+      the verdict before the admin chooses, and asks whether anything else
+      routes packets `[decision: onboard.forwarding-consumer]`.
 
       For `hardening.file_integrity`, an `apply` is **queued, not run**. The
       database is initialised in step 18c, after everything else this run
@@ -291,12 +294,6 @@ its owner.
     Without the fork on the node, the post-onboard
     `/apply-use-case <slug>` apply path won't work — but onboarding
     itself still completes.
-18c. If a `file_integrity` apply was queued in Phase 7, initialise it now,
-    per `bootstrap-node/references/hardening-recipes.md` § "File integrity",
-    so the database records the box as this run leaves it. Hold the
-    `sha256:` hash for the journal. A non-zero exit sets the field to
-    `unknown` and is journaled `apply-failed`, the same as any Phase 7 item.
-
 ### Phase 9 — Finalize
 
 18b. **Probe VS Code Remote Server compatibility**, over the
@@ -309,6 +306,14 @@ its owner.
     nohup fallback applies, or the admin installs it via
     `system_facts.package_manager`.
 
+18c. **Last on the box.** If a `file_integrity` apply was queued in Phase 7,
+    initialise it now: after Phase 8's clone and step 18b's probe, before
+    anything else touches the node,
+    per `bootstrap-node/references/hardening-recipes.md` § "File integrity",
+    so the database records the box as this run leaves it. Hold the
+    `sha256:` hash for the journal. A non-zero exit sets the field to
+    `unknown` and is journaled `apply-failed`, the same as any Phase 7 item.
+
 19. Update `nodes/<self>/node.yaml`:
     - For each `hardening.*` field: write the value from the reconcile
       delta (per-item resolution from Phase 7).
@@ -319,7 +324,7 @@ its owner.
       `fail2ban: enabled`, `ssh_root_login: disabled`,
       `ssh_password_auth: disabled`, `ssh_session_policy: enabled`,
       `kernel_hardening: enabled`, `file_integrity: enabled`,
-      `tailscale: joined`) AND the
+      `name_responders: disabled`, `tailscale: joined`) AND the
       cut-over verification routine passed during this run. Otherwise
       leave `last_bootstrapped: null` so the lifecycle is honest about
       the box's state.
@@ -414,7 +419,8 @@ and Phase 7 continues with the next item.
   work, and the document says so.
 - Restart or modify any adopted container or systemd user unit. Only the
   remediation anchors the admin approves are executed (sshd, firewall,
-  fail2ban, tailscaled, kernel hardening, file integrity, doccap-user setup).
+  fail2ban, tailscaled, kernel hardening, name responders, file integrity,
+  doccap-user setup).
 - Retroactively materialize quadlets — scaffolded docs are
   `status: planned`; apply moves to the node.
 - Modify existing use-case docs. A slug collision leaves the doc untouched and

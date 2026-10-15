@@ -185,7 +185,7 @@ Keys the probe emits:
 | `tsamples:<slug>` | `<line count>\|<newest sample epoch>`, or `absent` | both telemetry items |
 | `telemetry_timer` | `active` / `inactive` / `absent` | both telemetry items |
 | `notify_helper` | `present` / `absent` | whether the automation can publish |
-| `sshd_*`, `sysctl_*`, `sysctl_dropin`, `ts_advertises_routes`, `firewall_status`, `fail2ban` | as `onboard-node/references/onboard-recipes.md` § "Inventory probes" emits them | `node-hardening-holds` |
+| `sshd_*`, `root_akeys`, `responder`, `responders_probed`, `sysctl_*`, `kernel_dropin`, `ts_advertises_routes`, `firewall_status`, `fail2ban` | as `onboard-node/references/onboard-recipes.md` § "Inventory probes" emits them | `node-hardening-holds` |
 | `uid0:<account>`, `emptypw:<account>`, `shell:<account>` | `1` per account, or `no-probe` | `access-reviewed` |
 | `akeys:<account>` | comma-separated key fingerprints | `access-reviewed` |
 | `sudoers_valid` | `yes` / `no` / `no-probe` | `access-reviewed` |
@@ -670,11 +670,12 @@ re-base. Rules that hold for all eight:
 ### Hardening still holds
 
 **Goal.** What `node.yaml:hardening` claims is what the node is doing right
-now: the firewall is enforcing, fail2ban is running, and the effective sshd
-config and every drydocc kernel key match the baseline.
+now: the firewall is enforcing, fail2ban is running, the effective sshd
+config and every drydocc kernel key match the baseline, root holds no
+authorized key, and no link-local name responder answers beyond loopback.
 
-No dialect of its own. The probe emits the same `sshd_*`, `sysctl_*`,
-`sysctl_dropin` and `ts_advertises_routes` keys that
+No dialect of its own. The probe emits the same `sshd_*`, `root_akeys`,
+`responder`, `sysctl_*`, `kernel_dropin` and `ts_advertises_routes` keys that
 `onboard-node/references/onboard-recipes.md` § "Inventory probes" defines,
 plus the firewall status and fail2ban's unit state. Each field is classified
 by that file's § "Hardening classification rules". The classification lives
@@ -699,7 +700,7 @@ No dialect. The account and sudo databases are read through their own tools
 | UID 0 | `getent passwd \| awk -F: '$3==0{print $1}'` | any account other than `root`: **critical** |
 | empty password | `sudo -n getent shadow \| awk -F: '$2==""{print $1}'`. Emit names only, never the second field | any name: **critical**. A locked (`!` or `*`) field is fine |
 | interactive accounts | `getent passwd` accounts whose shell is listed in `/etc/shells` and is not a no-login shell | any name not in `security_baseline.accounts.login_shell` |
-| key holders | every account with a non-empty authorized-keys file, at the path(s) sshd's effective `authorizedkeysfile` names | any account not in `security_baseline.accounts.authorized_keys`. `root` holding keys is a finding even though root login is off |
+| key holders | every account with a non-empty authorized-keys file, at the path(s) sshd's effective `authorizedkeysfile` names | any account not in `security_baseline.accounts.authorized_keys`. `root` holding keys is `node-hardening-holds`' finding (`ssh_root_login`), so it is not reported twice. An account that shares root's home (an `operator` with home `/root`) is covered by the same finding |
 | `doccap`'s keys | `ssh-keygen -lf` over each line of `doccap`'s authorized-keys file | any fingerprint other than `ssh.public_key_fingerprint` |
 | sudoers syntax | `sudo -n visudo -c` | non-zero exit: **critical**, because the next sudo edit can lock `doccap` out |
 | sudo rules | every rule in the main sudoers file and its include directory, except `/etc/sudoers.d/doccap` | `NOPASSWD`; a command spec that is a shell, an editor, a pager or an interpreter; a wildcard in a command path; an `ALL` command spec for anyone except the framework drop-in. Report the file, the line number and the rule kind. Two kinds of `ALL` rule are **information, not findings**: one granting `root` (who already has every right), and one granting a group with no members (`getent group`). A member joining that group later turns it into a finding on the next sweep |
@@ -866,7 +867,12 @@ nothing new.
 
    Anything else is unexplained and is DRIFT. Report paths only.
 4. **Re-base on acceptance** (`[s] accept file-integrity-verified`). Show
-   every changed path first, unexplained ones at the top. Then run the tool's
+   every changed path first, unexplained ones at the top. The acceptance is
+   taken with the menu, but the re-base **runs last**: after every other
+   accepted item and after § "Rendering the automation". The rendered
+   script and units live in `~doccap/.config`, which is in scope, so a
+   re-base taken before them records a database the same run already broke.
+   A 2026-10 lab run did exactly that. When its turn comes, run the tool's
    update, promote the new database, hash it, and record the hash in the
    manifest and this run's journal entry. Risk `low`: it writes the node's
    database and nothing else.

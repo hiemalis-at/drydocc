@@ -9,7 +9,7 @@ Every `drydocc` node, after `/bootstrap-node` succeeds, reaches the following se
 ### User and Access Control
 
 - **Sudoer user `doccap`**: Unprivileged user created during bootstrap, with passwordless sudo for any command (`/etc/sudoers.d/doccap`). This is deliberate: unattended timers and agents need sudo without a prompt, and the account is reachable only by key. It is the one passwordless rule the framework writes, and reviews exempt it by path.
-- **Root SSH disabled**: Direct SSH login as `root` is forbidden (`PermitRootLogin no`), set in the node's sshd configuration (`ssh.config_include_dir` when the server has a drop-in mechanism; edited in place when that field is `null`).
+- **Root SSH disabled**: Direct SSH login as `root` is forbidden (`PermitRootLogin no`), set in the node's sshd configuration (`ssh.config_include_dir` when the server has a drop-in mechanism; edited in place when that field is `null`). Root also holds **no authorized key**. Provisioning, a cloud image or a provider often installs one, and once root login is off it serves nobody, but one config edit away it is a working door again. Bootstrap moves root's keys aside to a dated file (never deletes them) and journals their fingerprints.
 - **Password SSH disabled**: Password-based SSH authentication is disabled for all users, by both routes a password can take: the password method (`PasswordAuthentication no`) and keyboard-interactive, which PAM uses to ask for the same password (`KbdInteractiveAuthentication no`). Only SSH public-key authentication is permitted.
 - **Primary access via Tailscale**: After bootstrap, the admin connects via `tailscale ssh doccap@<tailscale_hostname>`. This is the primary access path and is secure by default (encrypted via WireGuard, authenticated via Tailscale's PKI).
 
@@ -59,6 +59,21 @@ per-tool commands.
   (ban after repeated failed attempts within a short window); see
   `hardening-recipes.md` § "fail2ban" for the exact idiom and thresholds.
 - **Use-case-specific jails**: Future use-cases may declare additional jails (e.g., a web app may declare a jail against its login endpoint). No schema field exists for this yet — not yet designed.
+
+### Link-local Name Responders
+
+- **No LLMNR or mDNS responder answers beyond loopback.** These protocols
+  answer any host on the local segment, which makes them the classic target
+  for name poisoning. A node is reached by its tailnet name and its declared
+  addresses, and needs neither.
+- **Turned off where they live**: in the config of the daemon that owns the
+  listener, which the probe finds by socket. The firewall is a second layer,
+  never the only one. A daemon that exists only to respond is disabled on a
+  fresh box, and on an adopted box only with the admin's approval.
+- **Declared exceptions win.** A use-case that declares such a port keeps it,
+  and the field records that.
+
+Procedure: `hardening-recipes.md` § "Link-local name responders".
 
 ### Kernel Parameters
 

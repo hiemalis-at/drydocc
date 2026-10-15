@@ -293,11 +293,11 @@ release may still change them, and the [changelog](CHANGELOG.md) says when.
 | `/modify-use-case`, `/remove-use-case`, `/list-use-cases`, `/node-maintenance` | Not yet run end to end |
 
 Each recipe's *Observed dialects* table records exactly which systems a step
-has been verified on. The kernel hardening, SSH session policy and
-file-integrity steps added after 0.1.0 have run in the lab: a fresh
-`/bootstrap-node`, then a report-only `/node-maintenance` sweep of the
-security-audit items. `/onboard-node`'s side of them, and an interactive
-sweep that records a baseline, have not run yet.
+has been verified on. The hardening added after 0.1.0 (kernel parameters, SSH
+session policy, root's keys, name responders, file integrity) has run in the
+lab through a fresh `/bootstrap-node` and through `/onboard-node` of a
+hand-built box. So have `/node-maintenance`'s security-audit items, both
+report-only and interactive, including an accepted integrity re-base.
 
 **Not implemented yet**
 

@@ -746,8 +746,12 @@ def reseal_args(rdir: Path, node: str, lab_pub: Path, root_pw_file: Path | None,
                 "--firstboot-command", "ssh-keygen -A && systemctl restart sshd"]
     if root_pw_file is not None:
         ops += ["--root-password", f"file:{root_pw_file}"]
-    ops += ["--ssh-inject", f"root:file:{lab_pub}"]
-    if doccap_pub is not None:
+    if doccap_pub is None:
+        # a base clone: the lab reaches it as root until /bootstrap-node runs
+        ops += ["--ssh-inject", f"root:file:{lab_pub}"]
+    else:
+        # a commissioned clone: reached as doccap; root keeps no key, as
+        # bootstrap left it (hardening-recipes.md, lockdown Step 7)
         ops += ["--ssh-inject", f"doccap:file:{doccap_pub}"]
     if tailnet_mtu is not None:
         # applies once the tailnet daemon is installed; harmless before

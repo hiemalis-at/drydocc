@@ -41,6 +41,10 @@ metadata:
   - The fail2ban jail config (root) — see `references/hardening-recipes.md`
     § "fail2ban"
   - The firewall tool's persistent store (per `system_facts.firewall.tool`)
+  - `/root/.ssh/authorized_keys` moved aside to a dated name — see
+    `references/hardening-recipes.md` § "SSH lockdown ordering" Step 7
+  - The name resolver's drop-in, or a responder-only daemon's unit state —
+    see `references/hardening-recipes.md` § "Link-local name responders"
   - `/etc/sysctl.d/90-drydocc-hardening.conf` (root, 0644) — see
     `references/hardening-recipes.md` § "Kernel hardening"
   - The file-integrity tool's exclusions and database (root) — see
@@ -230,6 +234,9 @@ Consult `references/hardening-recipes.md` for each idempotent snippet.
 21. **Re-verify** the doccap key on the new port. On failure at step 20d/21:
     the box is still reachable on port 22 (and the root session is live) — keep
     sessions intact, journal `partial`, halt (recovery checklist below).
+21b. **Retire root's authorized keys** (lockdown Step 7). Only after step 21
+    passed. Move every file the server reads for root aside to a dated name,
+    and journal the key fingerprints.
 22. Persist `ssh.*`, `hardening.ssh_root_login: disabled`,
     `hardening.ssh_password_auth: disabled`, and `hardening.ssh_session_policy`
     (as the recipe's Record step decides) to `node.yaml`.
@@ -270,6 +277,11 @@ escalating with `sudo`. Consult `references/hardening-recipes.md`.
     `tailscale set --ssh` so resumed/already-joined nodes self-heal too.
 27. `loginctl enable-linger doccap`.
 28. Write `/etc/drydocc/node-name` containing `<slug>`.
+28a. **Silence link-local name responders** per
+    `references/hardening-recipes.md` § "Link-local name responders": find
+    each LLMNR/mDNS listener's owner by socket, switch the responder off in
+    that daemon (or disable a responder-only daemon), and confirm both that
+    nothing listens beyond loopback and that ordinary lookups still resolve.
 28b. **Harden kernel parameters** per `references/hardening-recipes.md`
     § "Kernel hardening". It runs after the tailnet join because the
     forwarding verdict reads the node's own tailnet preferences. Derive the
@@ -329,6 +341,7 @@ escalating with `sudo`. Consult `references/hardening-recipes.md`.
     `hardening.ssh_root_login: disabled`, `hardening.ssh_password_auth: disabled`,
     `hardening.ssh_session_policy` (as step 22 recorded it),
     `hardening.kernel_hardening: enabled`, `hardening.file_integrity: enabled`,
+    `hardening.name_responders: disabled`,
     `hardening.tailscale: joined` (`deferred` when the tailnet is off), the `remote_ide` block from the step-29b probe
     (`vscode_server`, `reason`, `probed: <today>`), plus any
     `provisioning.*`/`ssh.*`/`system_facts.*`/`identity.*` not yet written (the

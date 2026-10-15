@@ -45,7 +45,8 @@ described in this repository before: every `system_facts` dialect fact
 `firewall.{tool,rule_model,tag_mechanism}`, `rootless_ready`,
 `capabilities.{python3,rsync,tmux}`), the machine-identity pair
 (`identity.*`), the current `doccap` user/sudoers/pubkey/linger state, the
-sshd config in force (lockdown and session policy), the live value of every
+sshd config in force (lockdown and session policy), how many authorized
+keys root holds, the owner of every LLMNR/mDNS listener, the live value of every
 drydocc kernel-hardening key with the forwarding-consumer hints, the
 integrity tool and its database hash, every running container, every
 listening port, and every enabled systemd unit the framework doesn't already
@@ -114,6 +115,29 @@ else
   done
 fi
 
+# Root's authorized keys — every location the server reads for root, as a
+# count of keys, never the keys. Falls back to the documented default when
+# the server cannot dump its effective config.
+AKF="$( [ -n "$SSHD_EFFECTIVE_CONFIG_CMD" ] && sudo -n sh -c "$SSHD_EFFECTIVE_CONFIG_CMD" 2>/dev/null \
+        | awk '$1=="authorizedkeysfile"{for(i=2;i<=NF;i++) print $i}')"
+[ -n "$AKF" ] || AKF=".ssh/authorized_keys"
+N=0
+for f in $AKF; do
+  p="$(printf '%s' "$f" | sed -e 's#%h#/root#g' -e 's#%u#root#g' -e 's#%%#%#g')"
+  case "$p" in /*) ;; *) p="/root/$p" ;; esac
+  c="$(sudo -n grep -cE '^(ssh-|ecdsa-|sk-)' "$p" 2>/dev/null)" && N=$((N + c))
+done
+sudo -n true 2>/dev/null && echo "root_akeys=$N" || echo root_akeys=unknown
+
+# Link-local name responders — owner of every LLMNR (5355) / mDNS (5353)
+# listener beyond loopback, by socket.
+sudo -n ss -lntupH 2>/dev/null | awk '
+  { split($5, a, ":"); port = a[length(a)]; addr = substr($5, 1, length($5) - length(port) - 1) }
+  (port == "5355" || port == "5353") && addr !~ /^(127\.|\[::1\]|::1)/ {
+    match($0, /users:\(\("[^"]+"/); own = substr($0, RSTART + 9, RLENGTH - 10)
+    print "responder=" $1 ":" port ":" (own == "" ? "unknown" : own) }'
+echo responders_probed=1
+
 # Kernel hardening — the live value of every key the drydocc drop-in can
 # write (bootstrap-node/references/hardening-recipes.md § "Kernel hardening"),
 # and whether drydocc's own drop-in is there. Reading needs no privilege.
@@ -127,7 +151,7 @@ for k in kernel.randomize_va_space kernel.kptr_restrict kernel.dmesg_restrict \
   echo "sysctl_${k}=$(sysctl -n "$k" 2>/dev/null || echo unknown)"
 done
 test -f /etc/sysctl.d/90-drydocc-hardening.conf \
-  && echo sysctl_dropin=present || echo sysctl_dropin=absent
+  && echo kernel_dropin=present || echo kernel_dropin=absent
 # Forwarding consumer hint from the tailnet: the node's OWN advertised routes.
 # Rootful container networks come from the container inventory below.
 if command -v tailscale >/dev/null 2>&1; then
@@ -451,8 +475,10 @@ preserves instead).
 | sshd drop-in (port + lockdown)       | `bootstrap-node/references/hardening-recipes.md#ssh-lockdown-ordering-dual-port-transitional`| `sshd_root=` / `sshd_passauth=` / `sshd_kbdint=` / `sshd_port=` from § "Inventory probes" above (via `ssh.effective_config_cmd`) |
 | firewall enabled + default-deny rules | `bootstrap-node/references/hardening-recipes.md#firewall`                  | `firewall_status=` + the tagged-rule read-back for `system_facts.firewall.tool`, both from § "Inventory probes" above |
 | fail2ban sshd jail                   | `bootstrap-node/references/hardening-recipes.md#fail2ban`                   | `systemctl is-active fail2ban` + `test -f /etc/fail2ban/jail.d/sshd.local`                               |
+| Root holds no authorized key         | `bootstrap-node/references/hardening-recipes.md#ssh-lockdown-ordering-dual-port-transitional` (Step 7) | `root_akeys=` from § "Inventory probes" above |
+| Link-local name responders off       | `bootstrap-node/references/hardening-recipes.md#link-local-name-responders` | every `responder=` line from § "Inventory probes" above |
 | SSH session policy                   | `bootstrap-node/references/hardening-recipes.md#ssh-lockdown-ordering-dual-port-transitional` (same drop-in as the lockdown) | the five `sshd_emptypw=` … `sshd_alive_count=` keys from § "Inventory probes" above |
-| Kernel hardening drop-in             | `bootstrap-node/references/hardening-recipes.md#kernel-hardening`           | the `sysctl_*=` keys, `sysctl_dropin=`, and `ts_advertises_routes=` from § "Inventory probes" above, plus the rootful container networks from the container inventory |
+| Kernel hardening drop-in             | `bootstrap-node/references/hardening-recipes.md#kernel-hardening`           | the `sysctl_*=` keys, `kernel_dropin=`, and `ts_advertises_routes=` from § "Inventory probes" above, plus the rootful container networks from the container inventory |
 | File-integrity database              | `bootstrap-node/references/hardening-recipes.md#file-integrity`             | `integrity_tool=` + `integrity_db_hash=` from § "Inventory probes" above                                 |
 | Tailscale joined as `<hostname>`     | `bootstrap-node/references/hardening-recipes.md#tailscale-up`               | that section's `ts_self_up` — the node's own status entry, never a grep of the peer table                 |
 | Lingering enabled for doccap        | `bootstrap-node/references/hardening-recipes.md#lingering--identity-file`                  | `loginctl show-user doccap --property=Linger --value`                                                   |
@@ -465,7 +491,7 @@ behaviour identical to a clean bootstrap.
 
 ## Hardening classification rules
 
-For each of the eight `hardening.*` fields, the probe output maps to one
+For each of the nine `hardening.*` fields, the probe output maps to one
 of `aligned | drift | unknown`. Every row classifies the **probe's emitted
 key**, not a tool's output text, so a node whose firewall or SSH server is one
 nobody has written down still classifies — the § "Inventory probes" contract
@@ -475,7 +501,8 @@ already resolved which tool answered, and `unknown` is always a legal result.
 | --------------------- | --------------------------------------------------------- | ------------------------------------------------------- | ---------------------------------------- |
 | `firewall`            | `firewall_status=` reports the rule set enforcing         | reports it present but not enforcing                    | `firewall_tool=unknown`, no probe for the tool, or sudo denied |
 | `fail2ban`            | `systemctl is-active fail2ban == active` AND the jail drop-in exists | `inactive`/`failed`, OR active but the jail drop-in absent | unit-not-found / probe error             |
-| `ssh_root_login`      | `sshd_root=no`                                            | `yes` OR `prohibit-password` (`drydocc` baseline is `no`) | `sshd_root=unknown` (`ssh.effective_config_cmd` is `null` or failed) |
+| `ssh_root_login`      | `sshd_root=no` AND `root_akeys=0`                         | `yes` OR `prohibit-password` (`drydocc` baseline is `no`), OR root holds keys even though login is off | `sshd_root=unknown` (`ssh.effective_config_cmd` is `null` or failed), or `root_akeys=unknown` |
+| `name_responders`     | no `responder=` line, or only ports an accepted use-case declares | any other `responder=` line                             | `responders_probed` absent (sudo denied)  |
 | `ssh_password_auth`   | `sshd_passauth=no` AND `sshd_kbdint=no`                   | either is `yes`. Keyboard-interactive is the same password through PAM | either `unknown`                          |
 | `ssh_session_policy`  | `sshd_emptypw=no`, `sshd_pubkey=yes`, `sshd_x11=no`, and both `sshd_alive_*` greater than `0` | any of those five differs. An `sshd_alive_interval=0` means dead peers are never dropped | any of the five `unknown` |
 | `kernel_hardening`    | every `sysctl_*` key equals the value the § "Kernel hardening" verdict derives for this box | any key differs. Forwarding left on under a consumer is **not** a difference: the derived value is "as found" | any key `unknown`, or the consumer verdict could not be reached |
@@ -500,6 +527,7 @@ the standard enum:
 
 - `firewall`, `fail2ban`, `ssh_session_policy`, `kernel_hardening`,
   `file_integrity` → `enabled` / `disabled` / `unknown`.
+- `name_responders` → `disabled` (baseline reached) / `enabled` / `unknown`.
 - `ssh_root_login`, `ssh_password_auth` → `disabled` (= `drydocc`
   baseline reached) / `enabled` (= still permitted) / `unknown`.
 - `tailscale` → `joined` / `unknown`.
@@ -540,6 +568,12 @@ Special cases:
   If cut-over verification fails, every sshd field reverts to `unknown` in
   the node.yaml delta (the box state is what it is, but our record
   honestly says we don't know if the change stuck).
+- `ssh_root_login` applying on a box where root holds keys also retires
+  those keys (lockdown Step 7). The menu's `current:` line names how many keys
+  there are and where, so the admin knows a key is being taken away.
+- `name_responders` names each owner. A responder-only daemon is disabled
+  only under this item's `apply`, because something on an adopted box may
+  browse for services through it.
 - `kernel_hardening` renders the forwarding verdict **above** the standard
   menu block, so the admin can name a consumer the probe missed before
   anything is written:
@@ -551,6 +585,9 @@ Special cases:
     left as found, reverse-path filter loose>. Other sysctl files are untouched.
     Is anything else on this box routing packets? [n] no  [y] yes, name it
   ```
+
+  That question is `[decision: onboard.forwarding-consumer]`, asked before
+  the item's apply/skip/defer choice.
 - `file_integrity` `apply` is queued until the end of the run (`onboard-node`
   step 18c). Its menu says so, because an init before the other applies
   would record a box this run is about to change.

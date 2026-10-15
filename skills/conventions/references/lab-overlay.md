@@ -110,7 +110,12 @@ question. Ids defined so far:
 | `onboard.pin-image` | onboard-node · 10 | the pinned image per repository, e.g. `docker.io/library/nginx:1.27.3-alpine` |
 | `onboard.accept-doc` | onboard-node · 11 | `accept` \| `skip` — applies to every proposed document |
 | `onboard.reconcile` | onboard-node · 14 | per item `apply` \| `skip` \| `defer`; one answer may cover all items with exceptions, e.g. `apply every item except tailscale, which is defer` |
+| `onboard.forwarding-consumer` | onboard-node · 14 | `none`, or what else routes packets on the box |
 | `onboard.land-repo` | onboard-node · 18 | `yes` \| `no` |
+| `maintenance.act` | node-maintenance · 7 | the menu keys to act on, e.g. `s file-integrity-verified` or `l, f`, or `n` (act on nothing) |
+| `maintenance.reboot` | node-maintenance · 7 | `yes` \| `no` |
+| `maintenance.promote` | node-maintenance · 7 | `no`, or the ids to promote to `auto` |
+| `maintenance.enable-sampler` | node-maintenance · 8 | `yes` \| `no` |
 | `node-context.replace-unfinished` | node-context · Resume pointer 1 | `yes` (drop the unfinished run) \| `no` |
 | `continue-last-command.still-running` | continue-last-command · 4.1 | `yes` \| `no` |
 | `continue-last-command.leftovers` | continue-last-command · 4.3 | `keep` \| `discard` |
