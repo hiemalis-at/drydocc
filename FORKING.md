@@ -126,8 +126,9 @@ skill:
 1. **Check the environment** — if `$DOCCAP_TS_KEY` is already set, it's
    used directly.
 2. **`@max-win-at/keepassxc-secrets` agentskill** — if installed, fetches
-   the value from KeePassXC automatically. Create the KeePass entry
-   `drydocc/tailscale` with URL `https://drydo.cc.local/tailscale` and
+   the value from KeePassXC automatically. Create a KeePass entry
+   (any title or group — only its URL field is matched) with URL
+   `drydocc://tailscale` and
    store the auth key in the Password field.
 3. **`.env` fallback** — if neither of the above works, the agent names
    the missing variable and prints a command that lets you paste it into
@@ -241,8 +242,8 @@ rise in logged errors, restarts — without running any monitoring daemon.
 
 Optionally, get pushed rather than having to look: install the ntfy app on
 your phone and run `/node-notify <node> --setup`. It generates two random
-topic names for you to store in a KeePassXC entry `drydocc/ntfy` (URL
-`https://drydo.cc.local/ntfy`), subscribes you to one, and sends a test
+topic names for you to store in a KeePassXC entry with URL
+`drydocc://ntfy`, subscribes you to one, and sends a test
 message. From then on failed timer runs, telemetry anomalies, and missed runs —
 including a node that has gone silent — reach your phone. Treat the topic
 names like passwords: anyone who knows one can read it.

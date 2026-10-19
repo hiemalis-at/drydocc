@@ -10,7 +10,8 @@
 #   exit 75      an API-level end — invalid or missing key, rate limit, provider
 #                error — is infrastructure, never a verdict on the code under test
 #
-# `--interactive [args…]` starts vibe for an admin at the keyboard instead.
+# `--interactive [args…]` starts vibe for an admin at the keyboard instead;
+# `--check` reports readiness as one JSON line without calling a model.
 set -euo pipefail
 
 : "${DRYDOCC_LAB_REAL_HOME:?}"
@@ -22,6 +23,18 @@ fi
 # MISTRAL_API_KEY in the environment works as well; vibe reads it first.
 if [ -n "${DRYDOCC_LAB_MODEL:-}" ]; then
   export VIBE_ACTIVE_MODEL="$DRYDOCC_LAB_MODEL"
+fi
+
+if [ "${1:-}" = "--check" ]; then
+  ready=true detail="Mistral Vibe; billed per use"
+  if ! command -v vibe >/dev/null; then
+    ready=false detail="vibe is not installed"
+  elif [ ! -e "$cred" ] && [ -z "${MISTRAL_API_KEY:-}" ]; then
+    ready=false detail="no key — run vibe once, or set MISTRAL_API_KEY"
+  fi
+  python3 -c 'import json, sys; print(json.dumps({"ready": sys.argv[1] == "true", "cost": "paid",
+    "model": sys.argv[2], "detail": sys.argv[3]}, ensure_ascii=False))' "$ready" "${DRYDOCC_LAB_MODEL:-}" "$detail"
+  exit 0
 fi
 
 if [ "${1:-}" = "--interactive" ]; then

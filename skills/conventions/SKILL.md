@@ -71,8 +71,8 @@ rather than naming tools, and the machine-readable list of blocked terms. Consul
   holds metadata only — never private keys.
 - **Journal**: append-only, same commit as the change it records; failures still
   journal (`outcome: failed`).
-- **Secrets manifest**: values NEVER in git. `keepass_entry` uses the
-  `drydocc/…` prefix and is metadata for the
+- **Secrets manifest**: values NEVER in git. `keepass_entry` is a
+  `drydocc://…` lookup URL and is metadata for the
   `@max-win-at/keepassxc-secrets` skill. The node-side env file is owned
   `doccap:doccap`, chmod 600. See the `secrets` skill for resolution.
 - **Audit manifest**: entirely optional — `/audit-use-case`'s universal checks

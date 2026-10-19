@@ -79,20 +79,25 @@ repo-only write authority are in the `conventions` skill's
    use-case — report it and move on; do not guess at intent.
 
    Read the **body** too, not only the frontmatter: when the doc carries a
-   `## Migration` section, take its `unit:` line — that is the host unit the
-   Tier 1 probe tests and the Status coherence row judges. Its labelled-line
-   schema is the `conventions` skill's `references/use-case-doc.md` § Migration.
-   No section means no migration unit; that is the ordinary case.
+   `## Migration` section, take its `units:` list (a single `unit:` is a
+   one-item list), its `owner:`, and the legacy names from its `containers:`
+   pairs. Those are the units and legacy containers the Tier 1 probe tests
+   (`MIGRATION_UNITS`, `LEGACY_OWNER`, `LEGACY_NAMES`) and the Status
+   coherence row judges. Its labelled-line schema is the `conventions` skill's
+   `references/use-case-doc.md` § Migration. No section means nothing was
+   adopted; that is the ordinary case.
 
    Check the **static invariants** now, since they need no node access:
-   `containers`/`networks`/`volumes` must equal the `spec.*` keys, and every
+   `containers`/`networks`/`volumes` must equal the `spec.*` keys, every
    `spec.containers.*.image` must carry a pinned tag (`:latest` is a validation
-   error). These are reported even if every subsequent probe fails.
+   error), and every container must pass the validation rules in
+   `podman-quadlets` § "Render from spec". These are reported even if every subsequent probe fails.
 
 4. **Run the Tier 1 probe.** Issue the bundled probe script from
    `references/audit-recipes.md` § "The bundled probe" as a single `NODE_RUN`,
    substituting from step 3: the slug, the declared container/network/volume
-   names, the migration unit (empty when the doc declares none), and the node's
+   names, the migration units and legacy owner (empty when the doc declares
+   none), and the node's
    `system_facts.firewall.tool`. Each substitution is one of the probe's own
    header assignments — that block is the list, so fill every line of it. Parse
    the `<key>=<value>` lines into an in-memory inventory. Capture the full
@@ -119,7 +124,8 @@ repo-only write authority are in the `conventions` skill's
    `references/audit-recipes.md` § "Tier 3 — unmanaged mutation":
    - `podman diff` per running container, minus paths under declared mount
      targets → writable-layer mutation, recovery `lost on rebuild`. Universal;
-     needs no manifest. A stopped container yields `UNKNOWN`, never "clean".
+     needs no manifest. A stopped container yields `UNKNOWN`, never "clean";
+     a `oneshot` container is skipped.
    - Digest each `config_surfaces[]` entry and compare against `fingerprints`.
      Honour `ignore[]`. A first sighting is recorded, not alarmed. A **stale
      baseline** — `<slug>.md:last_applied_commit` newer than the manifest's
@@ -141,7 +147,7 @@ repo-only write authority are in the `conventions` skill's
 
    For each `node-ahead` finding, render the menu from
    `references/audit-recipes.md` § "Capture-back menu copy" and apply the
-   admin's choice. `[p] promote` is offered only where the doc catching up
+   admin's choice `[decision: audit-use-case.capture-back]`. `[p] promote` is offered only where the doc catching up
    makes doc and node consistent with no further action; after promoting,
    re-run the affected check and revert the edit if the finding does not clear.
 

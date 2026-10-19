@@ -149,9 +149,10 @@ Same procedure, same journal, different transport.
 ### The lab
 
 The same skills also run against **local VMs**, with no change to them. A lab
-run is a fork of its own: a git worktree with an empty fleet, a local lab
-remote as `origin`, an isolated home, and PATH shims that keep its ssh,
-tailnet and vault access inside the run. Its nodes are linked clones of
+run is a fork of its own: a standalone clone in the lab store, outside the
+admin's checkout, with an empty fleet, a local lab remote as its only remote,
+an isolated home, and PATH shims that keep its ssh, tailnet and vault access
+inside the run and the hypervisor out of its reach. Its nodes are linked clones of
 sealed VM layers — an installed empty OS, then the same plus
 `/bootstrap-node` — resealed with their own identity before first boot, for
 the host's architecture or an emulated one. A deterministic driver

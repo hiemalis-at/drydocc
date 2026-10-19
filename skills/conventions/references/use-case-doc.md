@@ -12,6 +12,7 @@ To avoid a filesystem collision between a file named `<slug>.md` and a directory
 - **`<slug>.secrets.yaml`** — secrets manifest (required only if `has_secrets: true` in frontmatter; see `secrets.md`)
 - **`<slug>.audit.yaml`** — audit manifest (entirely optional; see `audit-manifest.md`)
 - **`<slug>.backup.yaml`** — backup manifest (entirely optional; see `backup-manifest.md`)
+- **`<slug>.files/<vol>/`** — a directory, present only for a volume that declares `source: files`: the configuration files that volume holds on the node, verbatim. No secret values and no templates. The sync rules are in `skills/podman-quadlets/SKILL.md` under `#### Files volumes`.
 
 Quadlet files are rendered on apply from the doc's `spec:` block and live only on the node at `~/.config/containers/systemd/<slug>-*.{container,network}`. No `<slug>.quadlets/` directory exists in git.
 
@@ -75,9 +76,9 @@ spec:
 - **`containers`** — List of container names (as they appear in quadlets and `podman ps`). May be empty if the use-case does not declare containers.
 - **`networks`** — List of custom podman network names declared by this use-case. May be empty.
 - **`volumes`** — List of named volumes declared by this use-case. May be empty.
-- **`ports`** — List of strings in the format `"<port>/<proto>"` (always quoted to parse as strings, not numbers). Examples: `["443/tcp", "3478/udp"]`. May be empty. These ports are declared for the node's firewall rule set (per `system_facts.firewall.tool`).
+- **`ports`** — The use-case's **firewall list**: every port that must be reachable from outside the node, and nothing else. Strings in the format `"<port>/<proto>"` or, for a range, `"<lo>-<hi>/<proto>"` (always quoted, so they parse as strings, not numbers). Examples: `["443/tcp", "3478/udp", "49152-65535/udp"]`. May be empty. Each entry becomes one tagged rule in the node's firewall (per `system_facts.firewall.tool`). The list is not the same as the containers' published ports. A port published only on a loopback address (`"127.0.0.1:8080:80/tcp"` under a container's `ports`) is never listed here. A host-network container publishes nothing, but may still need an entry here for what it `listens:` on. A range is opened as a whole and is never expected to be listening as a whole.
 - **`has_secrets`** — Boolean. If `true`, a sibling `<slug>.secrets.yaml` file must exist and contain the secrets manifest (see `secrets.md`). When `true`, every container in `spec.containers` that needs the values must set `env_from` to the manifest's `target_path` (typically `/etc/drydocc/secrets/<slug>.env`).
-- **`spec`** — The implementation block consumed by the render function in `podman-quadlets` to produce on-node quadlets. It has three sub-keys: `networks`, `volumes`, `containers`. Invariant: the names under `spec.networks`/`spec.volumes`/`spec.containers` MUST equal the top-level `networks`/`volumes`/`containers` lists (the lists are the public summary `/list-use-cases` parses; `spec:` is the implementation detail). The full per-key schema lives in `skills/podman-quadlets/SKILL.md` under `## Render from spec`.
+- **`spec`** — The implementation block consumed by the render function in `podman-quadlets` to produce on-node quadlets. It has three sub-keys, `networks`, `volumes` and `containers`, plus the optional `jobs`. Invariant: the names under `spec.networks`/`spec.volumes`/`spec.containers` MUST equal the top-level `networks`/`volumes`/`containers` lists (the lists are the public summary `/list-use-cases` parses; `spec:` is the implementation detail). The full per-key schema lives in `skills/podman-quadlets/SKILL.md` under `## Render from spec`. Beyond the keys in the example above, a container may set `networks`, `network: host` with `listens`, `aliases`, `cap_add`, `hostname`, `user`, `entrypoint`, `healthcheck` and `start_timeout`, and a network may set `subnet`. A volume may set `source: files` (with `file_mode`) or `shared: true`, and a mount may set `subpath`, or name `from: <owner-slug>/<vol>` in place of `volume`. A container may set `oneshot: true`, and `spec` may hold a fourth sub-key, `jobs`, for the use-case's scheduled work (`skills/podman-quadlets/SKILL.md` under `## Jobs`). `jobs` names no containers, networks or volumes of its own, so it has no top-level summary list. Each key's render line and validation rule is defined there, not here.
 
 ## Body Sections
 
@@ -114,23 +115,53 @@ Agent appends learnings here as `/audit-use-case` or human troubleshooting uncov
 
 ### Migration (optional)
 
-Present only on a document that adopts a host-native service — either a mapped daemon being replaced by a container image, or a capture-only document for a service with no container equivalent yet. Absent on every other use-case.
+Present on a document that adopts something already running on the node:
 
-This section is **parsed**, so its head is a fixed set of labelled lines, followed by free prose:
+- a host-native service, either a mapped daemon being replaced by a container
+  image or a capture-only document for a service with no container
+  equivalent yet;
+- containers that need more than the defaults to be found: run by another
+  user, or under names other than their spec keys.
+
+Absent on every other use-case.
+
+This section is **parsed**, so its head is a fixed set of labelled lines,
+followed by free prose. Every line is optional, and a container-only adoption
+may carry nothing but `owner:` and `containers:`:
 
 ```
-unit:      nginx.service
-packages:  nginx, nginx-common
-config:    /etc/nginx
-data:      /var/www/html
-ports:     80/tcp, 443/tcp
-enabled:   true
+owner:       legacy
+containers:  app=systemd-wiki, db=systemd-wiki-db
+units:       nginx.service, certbot.timer, legacy/app-cleanup.timer
+packages:    nginx, nginx-common
+config:      /etc/nginx
+data:        /var/www/html
+ports:       80/tcp, 443/tcp
+enabled:     true
 ```
 
-Two of these fields are machine-consumed during an adoption cut-over, and each has exactly one job:
+These fields are machine-consumed during an adoption cut-over, and each has
+exactly one job:
 
-- **`unit:`** names the host unit — it is the only field that identifies what `/apply-use-case` disables.
-- **`config:`** and **`data:`** are comma-separated host paths, and they are the only source of truth for what that command copies into the declared volumes. Nothing else in the document carries a legacy path: `spec.volumes.<vol>` holds mode and owner, and `spec.containers.*.mounts[]` holds the in-container target. How the paths are joined to volumes is `/apply-use-case`'s procedure, not this schema's.
+- **`owner:`** is the user whose rootless podman runs the legacy containers.
+  Absent means `doccap`, and `root` means the node's rootful podman. It is the
+  only field that says where `/apply-use-case` looks for them.
+- **`containers:`** holds `<spec-key>=<legacy-name>` pairs, comma-separated:
+  the name each declared container's predecessor carries on the box today. A
+  spec key that is not listed adopts a legacy container of its own name.
+- **`units:`** names the host units the use-case replaces, comma-separated: a
+  system unit bare (`nginx.service`), and one of a user's own units as
+  `<user>/<unit>` (`legacy/app-cleanup.timer`). It is the only
+  field that identifies what `/apply-use-case` disables. The older
+  single-unit form `unit: <unit>` is read as a one-item `units:`. A document
+  never carries both.
+- **`config:`** and **`data:`** are comma-separated host paths. They are the
+  only source of truth for what that command copies into the declared
+  volumes from a host unit. A legacy container's sources are read from the
+  container itself. Nothing else in the document carries a legacy path:
+  `spec.volumes.<vol>` holds mode and owner, and `spec.containers.*.mounts[]`
+  holds the in-container target. How the paths are joined to volumes is
+  `/apply-use-case`'s procedure, not this schema's.
 
 `packages:`, `ports:`, and `enabled:` carry what the onboarding probe found and are read by humans only, so a capture-only document is a worklist item someone can act on rather than a dead end. A capture-only document additionally has empty `containers`/`networks`/`volumes` lists with matching empty `spec:` sub-keys; `/apply-use-case` refuses it until the section is worked up into a real `spec:` block.
 

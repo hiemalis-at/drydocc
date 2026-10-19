@@ -45,8 +45,8 @@ A document is:
 
 - **recoverable** — `status: active` and `spec.containers` non-empty;
 - **not declarative** — `status: active`, `spec.containers` empty (a
-  capture-only host service). Its `## Migration` head (`unit:`, `packages:`,
-  `data:`) goes into the report as the manual worklist;
+  capture-only host service). Its `## Migration` head (`units:` or `unit:`,
+  `packages:`, `data:`) goes into the report as the manual worklist;
 - **listed only** — `status: planned`.
 
 ---
@@ -77,7 +77,8 @@ before anything runs:
 
 - **Volumes with no backup** — every declared volume of a recoverable
   use-case that has no `<slug>.backup.yaml`, or that its manifest's
-  `volumes[]` omits.
+  `volumes[]` omits. A files volume (`source: files`) is never one of them:
+  its content is in git, and `/apply-use-case` repopulates it.
 - **Unproven backups** — `last_restore_test: null`. The restore is still the
   only copy there is; say that it has never been proven and may fail.
 - **Excluded paths** — each backed-up volume's `volumes[].exclude` globs, by
@@ -315,7 +316,7 @@ dump/load path exists. If none does, the admin decides.
 |---|---|---|
 | any `lost` | yes | `restore` — live `/restore-use-case`, newest usable seal |
 | any `suspect`, none `lost` | yes | `offer` — shown with both counts; default is no |
-| any `lost` or `empty` | no, or the volume is not in it | `unrecoverable` — into the loss inventory |
+| any `lost` or `empty` | no, or the volume is not in it | `unrecoverable` — into the loss inventory (never a files volume: it is repopulated from git) |
 | all `intact` | — | `none` |
 | any `unknown` | — | `none` this run; reported, with the volume |
 

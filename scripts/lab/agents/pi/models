@@ -1,0 +1,18 @@
+# The pi adapter's free-model fallback chain: OpenRouter model ids, most capable
+# first. pi.sh starts each step on the first one OpenRouter still lists with tool
+# calling, and moves a failing step's session to the next. DRYDOCC_LAB_MODEL
+# overrides the whole chain (one id pins it).
+#
+# Order: seeded 2026-10-15 from OpenRouter's free roster by size and agentic-coding
+# focus. Reorder from `lab.py qualify` results — the matrix is the evidence; this
+# file only records its conclusion. Measured so far (whoami, web-db; one run each):
+# nemotron-3-ultra passed both; inkling, laguna-s-2.1 and nemotron-3-super failed
+# whoami; the rest are unmeasured.
+nvidia/nemotron-3-ultra-550b-a55b:free
+thinkingmachines/inkling:free
+poolside/laguna-s-2.1:free
+nvidia/nemotron-3-super-120b-a12b:free
+google/gemma-4-31b-it:free
+dots-studio/dots-3-note-preview:free
+nvidia/nemotron-3.5-lightning:free
+cohere/north-mini-code:free

@@ -58,7 +58,7 @@ secrets:
     - name: DOCCAP_TS_KEY
       purpose: tailscale auth key for tailnet join
       phase: bootstrap
-      keepass_entry: "drydocc/tailscale"
+      keepass_entry: "drydocc://tailscale"
       optional: false
 created: 2026-08-07
 last_bootstrapped: 2026-08-07T09:14:00Z

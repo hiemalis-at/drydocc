@@ -50,15 +50,16 @@ To resolve a secret with env-var NAME `<NAME>`:
 
 1. **Environment.** If `$<NAME>` is set and non-empty, use it **by reference
    only**. Do not read or `cat` any `.env`. Do not echo the value.
-2. **keepass skill.** Else, if `keepass_skill: available`, derive the lookup
-   URL from the `keepass_entry` recorded in the manifest (use-case secrets) or
-   `node.yaml:secrets.required_env` (session secrets):
+2. **keepass skill.** Else, if `keepass_skill: available`, take the
+   `keepass_entry` recorded in the manifest (use-case secrets) or
+   `node.yaml:secrets.required_env` (session secrets). It is already the
+   lookup URL:
 
    ```
-   drydocc/<rest>  →  https://drydo.cc.local/<rest>
+   drydocc://<node-name>[/<use-case>][/<user-or-detail>]
    ```
 
-   Then invoke `@max-win-at/keepassxc-secrets` with that URL to fetch `<NAME>`.
+   Invoke `@max-win-at/keepassxc-secrets` with that URL to fetch `<NAME>`.
    For multi-key entries, read the field matching `<NAME>` (custom string field
    on the KeePassXC entry). See `conventions` → `references/secrets.md` §
    "KeePassXC entry setup" for the full URL convention.
@@ -80,8 +81,8 @@ To resolve a secret with env-var NAME `<NAME>`:
    - Confirm the KeePass **vault containing this entry is the one currently
      open/unlocked** in KeePassXC (switching the active database is a
      manual step in the app).
-   - Confirm the entry's **URL field** is set exactly to the derived lookup
-     URL (`https://drydo.cc.local/<rest>`) — title and group path aren't
+   - Confirm the entry's **URL field** is set exactly to the
+     `keepass_entry` value (`drydocc://…`) — title and group path aren't
      matched, only the URL field.
 
    Retry step 2 once the user confirms; if they confirm the entry genuinely
@@ -213,8 +214,8 @@ manifest exists. Their env-var names live in `node.yaml:secrets.required_env`
 step 2.
 
 - `DOCCAP_TS_KEY` — required for the tailnet join. Resolved just-in-time in Phase 3
-  (immediately before `tailscale up`). `keepass_entry`: `drydocc/tailscale`
-  (infra-global; URL: `https://drydo.cc.local/tailscale`).
+  (immediately before `tailscale up`). `keepass_entry`: `drydocc://tailscale`
+  (global).
 
 Fork access is **not** a session secret. A node pushes its own commits, so it
 needs write access, and a token placed in a clone URL is stored in plaintext
@@ -253,8 +254,8 @@ file). They are listed in `node.yaml:secrets.required_env` with
 
 - `DOCCAP_NTFY_ADMIN_TOPIC`, `DOCCAP_NTFY_AGENT_TOPIC`, optional
   `DOCCAP_NTFY_TOKEN` — notification topics and token, installed by
-  `/node-notify` as `_notify.env`. `keepass_entry`: `drydocc/ntfy`
-  (infra-global; URL: `https://drydo.cc.local/ntfy`), one custom field per
+  `/node-notify` as `_notify.env`. `keepass_entry`: `drydocc://ntfy`
+  (global), one custom field per
   variable. A topic name is a credential: on a public server anyone who knows
   it can read and publish. Generate each one — never let the admin pick a
   memorable name:
@@ -300,8 +301,8 @@ git data (invariant 3):
 
 - **`key_source: generated`** — `ssh-keygen` writes the private key to
   `~/.ssh/doccap-at-<slug>` (0600) on the **admin laptop**. The admin then
-  stores it in KeePass under `drydocc/<infra>/ssh-keys/doccap-at-<slug>`
-  (attachment or private-key field) so it survives laptop loss — a manual admin
+  stores it in a KeePass entry with URL
+  `drydocc://<slug>/ssh/doccap-at-<slug>` (attachment or private-key field) so it survives laptop loss — a manual admin
   step, not an agent action.
 - **`key_source: keepass-agent`** — the admin already holds the desired key in a
   KeePassXC-backed `ssh-agent`; nothing is written to `~/.ssh`. The agent only

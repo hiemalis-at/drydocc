@@ -945,13 +945,18 @@ so no use-case owns them, and nothing in the framework will ever remove them.
 Called by `/apply-use-case` (step 9), `/modify-use-case` (firewall delta), and
 `/remove-use-case` (step 5), once per entry in the doc's `ports:` list. `$SLUG`
 is the use-case slug and **is the tag** — nothing else identifies these rules.
-`$PORT`/`$PROTO` come from the `"<port>/<proto>"` entry.
+`$PORT`/`$PROTO` come from the `"<port>/<proto>"` entry. `$PORT` may be a
+range, `<lo>-<hi>` (`"49152-65535/udp"`); one entry is always one rule.
 
 **Goal.** `${PORT}/${PROTO}` is allowed (Add) or no longer allowed (Remove)
 through the node's firewall tool, identified by `${SLUG}` and nothing else.
 
 **Fact / Deriving.** Reuse `system_facts.firewall.{tool,rule_model,
-tag_mechanism}`. **Add** uses the tool's tag-carrying form from § "Rule
+tag_mechanism}`. A range is written in the tool's own range form, which is
+not always the document's `<lo>-<hi>` spelling: derive it from the tool's
+documentation for its port argument, and record it in the `range form`
+column below once verified. Never expand a range into one rule per port.
+**Add** uses the tool's tag-carrying form from § "Rule
 tagging" with `${SLUG}` as the tag — idempotent, re-adding an existing rule
 is a no-op. **Remove** should delete by matching the tag whenever the tool
 supports that; a tool whose remove operation instead matches the whole rule
@@ -962,7 +967,9 @@ enumerate-then-remove: list every rule containing the tag and remove each
 returned line verbatim, never a freshly-built guess.
 
 **Verification.** Add: off-node the port answers, and on-node the read-back
-(§ "Rule tagging") shows the tag. Remove: off-node the port no longer answers
+(§ "Rule tagging") shows the tag. For a range, the read-back shows one rule
+covering the whole range, and the off-node check is skipped: nothing need
+answer on a range (a relay binds its ports on demand). Remove: off-node the port no longer answers
 (unless another rule independently permits it), and on-node the read-back no
 longer lists the tag.
 
@@ -972,16 +979,16 @@ longer lists the tag.
 
 **Add** (idempotent — re-adding an existing rule is a no-op):
 
-| tool | command | verified on | date |
-|---|---|---|---|
-| ufw | `sudo ufw allow ${PORT}/${PROTO} comment "${SLUG}"` | derived from § "Rule tagging"'s add form — not yet independently exercised through `/apply-use-case` against a live node | — |
-| firewalld | `sudo firewall-cmd --permanent --add-rich-rule="rule port port=\"${PORT}\" protocol=\"${PROTO}\" log prefix=\"${SLUG} \" level=\"info\" limit value=\"1/m\" accept" && sudo firewall-cmd --reload` | derived from § "Rule tagging"'s add form — not yet independently exercised through `/apply-use-case` against a live node | — |
+| tool | range form | command | verified on | date |
+|---|---|---|---|---|
+| ufw | `<lo>:<hi>` — set `PORT=${PORT/-/:}` first | `sudo ufw allow ${PORT}/${PROTO} comment "${SLUG}"` | derived from § "Rule tagging"'s add form — not yet independently exercised through `/apply-use-case` against a live node | — |
+| firewalld | `<lo>-<hi>`, unchanged | `sudo firewall-cmd --permanent --add-rich-rule="rule port port=\"${PORT}\" protocol=\"${PROTO}\" log prefix=\"${SLUG} \" level=\"info\" limit value=\"1/m\" accept" && sudo firewall-cmd --reload` | derived from § "Rule tagging"'s add form — not yet independently exercised through `/apply-use-case` against a live node | — |
 
 **Remove** (idempotent — removing an absent rule is a no-op):
 
 | tool | command | matches by | verified on | date |
 |---|---|---|---|---|
-| ufw | `sudo ufw delete allow ${PORT}/${PROTO}` | rule spec (delete-by-spec is native to a rule-list tool) | not yet independently exercised through `/remove-use-case` against a live node | — |
+| ufw | `sudo ufw delete allow ${PORT}/${PROTO}`, a range in `<lo>:<hi>` form as for Add | rule spec (delete-by-spec is native to a rule-list tool) | not yet independently exercised through `/remove-use-case` against a live node | — |
 | firewalld | enumerate-then-remove — the rule string must match byte-for-byte, so never reconstruct it: `sudo firewall-cmd --list-rich-rules \| grep -F "${SLUG}" \| while IFS= read -r r; do sudo firewall-cmd --permanent --remove-rich-rule="$r"; done; sudo firewall-cmd --reload` | full rule string (`--remove-rich-rule` has no by-tag form) | not yet independently exercised through `/remove-use-case` against a live node | — |
 
 If the add-side template above ever changes, rules written by the old
@@ -1003,27 +1010,69 @@ section whose `filter` is `sshd`, falling back to `sshd` — the name shipped
 in every fail2ban release seen so far — when nothing matches; drop the
 override into that same install's `jail.d/` directory, alongside `jail.conf`:
 
+**The commissioning client must stay in.** A jail that starts reads the
+auth log back over its `findtime`. That window holds this bootstrap's own
+failures from the client. The lockdown's check that root is refused, made
+while root still holds the client's key, logs every refused root login as
+up to three failures. Two such checks are over fail2ban's default
+`maxretry`, and the jail's first act is to ban the client that is
+commissioning the box. Start the jail
+with the client's address — as the node sees it, the first field of the
+session's `SSH_CONNECTION` — exempt, and drop the exemption once the jail
+has read its history. Nothing stays exempt afterwards: a standing exemption
+would also cover everything else behind that address.
+
 ```bash
 JAIL="$(awk -F'[][]' '/^\[/{n=$2} /^[ \t]*filter[ \t]*=[ \t]*sshd/{print n; exit}' /etc/fail2ban/jail.conf 2>/dev/null)"
 JAIL="${JAIL:-sshd}"
 JAILD="$(dirname /etc/fail2ban/jail.conf)/jail.d"
+CLIENT_ADDR="${SSH_CONNECTION%% *}"   # empty on a node-local surface: nothing to exempt
+jail_conf() {  # jail_conf [extra ignoreip]
+  printf '[%s]\nenabled = true\nport    = %s\n' "$JAIL" "${SSH_FALLBACK_PORT}"
+  [ -z "${1:-}" ] || printf 'ignoreip = 127.0.0.1/8 ::1 %s\n' "$1"
+}
 sudo install -d -m 0755 "$JAILD"
-test -f "${JAILD}/${JAIL}.local" \
-  || printf '[%s]\nenabled = true\nport    = %s\n' "$JAIL" "${SSH_FALLBACK_PORT}" \
-     | sudo install -m 0644 /dev/stdin "${JAILD}/${JAIL}.local"
-sudo systemctl enable --now fail2ban
+if ! test -f "${JAILD}/${JAIL}.local"; then
+  jail_conf "$CLIENT_ADDR" | sudo install -m 0644 /dev/stdin "${JAILD}/${JAIL}.local"
+  sudo systemctl enable --now fail2ban
+  for _ in $(seq 30); do sudo fail2ban-client status "$JAIL" >/dev/null 2>&1 && break; sleep 1; done
+  sleep 2   # let the jail finish reading its history while the client is still exempt
+  jail_conf | sudo install -m 0644 /dev/stdin "${JAILD}/${JAIL}.local"
+  [ -z "$CLIENT_ADDR" ] || sudo fail2ban-client set "$JAIL" delignoreip "$CLIENT_ADDR" >/dev/null
+else
+  sudo systemctl enable --now fail2ban
+fi
 ```
 
-**Verification.** `fail2ban-client status "$JAIL"` lists the jail as active
-and its monitored port(s) include `${SSH_FALLBACK_PORT}`. A jail name
-fail2ban itself doesn't recognize means the derivation guessed wrong — fall
-back to `sshd` before assuming a fresh install is broken.
+Run the block as **one** remote command: split across connections, a ban
+issued between them would end the session that is meant to lift it.
+
+**Verification.** `fail2ban-client status "$JAIL"` lists the jail as active,
+its monitored port(s) include `${SSH_FALLBACK_PORT}`, and its banned list does
+not hold `$CLIENT_ADDR`. Then open a **fresh** connection from the client to
+`${SSH_FALLBACK_PORT}` — it must succeed. A jail name fail2ban itself doesn't
+recognize means the derivation guessed wrong — fall back to `sshd` before
+assuming a fresh install is broken. A client that is banned anyway has lost
+the node: stop, journal the step with `outcome: failed` and the ban, leave
+`hardening.fail2ban: unknown`, and tell the admin it lifts after the jail's `bantime` (or from the console with
+`fail2ban-client set <jail> unbanip <address>`). Never retry in a loop: each
+attempt extends the ban. A connection reset right after failed logins, with
+the jail clear, is the SSH server's own per-source penalty (seconds to
+minutes, healing itself): wait, don't hammer.
 
 **Record.** `hardening.fail2ban: enabled`, journal.
 
 Every run so far has resolved to jail name `sshd` and jail.d directory
 `/etc/fail2ban/jail.d`, matching the fallback above — verified on test-01 /
 test-02, 2026-06.
+
+The client exemption was added after a lab bootstrap (x86_64 lab VM,
+2026-10-15): a jail started without it read back the bootstrap's own refused
+root logins from the lab host's address and banned it at once. Verified the
+same day on a lab node with root holding the client's key and two refused
+root logins in the window: the earlier form banned the client on start; this
+form did not, the exemption was gone afterwards, and new failures from the
+same address were banned again.
 
 ## Kernel hardening
 

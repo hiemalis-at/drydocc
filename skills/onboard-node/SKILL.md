@@ -165,7 +165,10 @@ it stopped.
    … PROBE'` invocation. Parse `<key>=<value>` lines into an in-memory
    inventory record. Capture the full session for the journal.
 8. For each discovered podman/docker container, run the per-container
-   `inspect` probe from the same skill section. **Container env values
+   `inspect` probe from the same skill section, as the container's owner. That
+   is the connecting user, or the lingering user whose inventory listed it.
+   Another user's rootless containers are invisible to everyone else's
+   `podman`. **Container env values
    are split on `=` and the right-hand sides are discarded
    immediately** — only variable names cross into the inventory.
 
@@ -348,7 +351,9 @@ its owner.
       admin skipped, every cluster and every host-native service the admin
       skipped at the accept menu (with discovered facts), every host-native
       service triaged as node infrastructure — no document is produced for
-      those, so the journal is their only record — and every non-hardening
+      those, so the journal is their only record — every lingering user's
+      user timers (`user_timer=`), every user whose containers could not be
+      listed (`podman_user=…|no-runtime-dir`), and every non-hardening
       anomaly observed (docker + podman coexisting, bind sources that will
       need rsync at apply time).
     - **NEVER include `$DOCCAP_TS_KEY` or any container env value.** Redact

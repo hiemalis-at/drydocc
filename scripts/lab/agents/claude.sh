@@ -6,7 +6,8 @@
 #   model        DRYDOCC_LAB_MODEL, when set, becomes --model
 #   exit 75      an API-level end (expired auth, rate limit, outage)
 #
-# `--interactive [args…]` starts the agent for an admin at the keyboard instead.
+# `--interactive [args…]` starts the agent for an admin at the keyboard instead;
+# `--check` reports readiness as one JSON line without calling a model.
 set -euo pipefail
 
 : "${DRYDOCC_LAB_REAL_HOME:?}"
@@ -16,6 +17,18 @@ if [ -e "$cred" ]; then
   ln -sfn "$cred" "$HOME/.claude/.credentials.json"
 fi
 # API-key authentication, when used instead, arrives through the environment.
+
+if [ "${1:-}" = "--check" ]; then
+  ready=true detail="Claude Code; billed per use"
+  if ! command -v claude >/dev/null; then
+    ready=false detail="claude is not installed"
+  elif [ ! -e "$cred" ] && [ -z "${ANTHROPIC_API_KEY:-}" ]; then
+    ready=false detail="not logged in — run claude once, or set ANTHROPIC_API_KEY"
+  fi
+  python3 -c 'import json, sys; print(json.dumps({"ready": sys.argv[1] == "true", "cost": "paid",
+    "model": sys.argv[2], "detail": sys.argv[3]}, ensure_ascii=False))' "$ready" "${DRYDOCC_LAB_MODEL:-}" "$detail"
+  exit 0
+fi
 
 if [ "${1:-}" = "--interactive" ]; then
   shift

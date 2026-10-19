@@ -79,7 +79,10 @@ last_restore_test_snapshot: null
   per-volume excludes (shell globs, relative to the volume root — same shape
   as `<slug>.audit.yaml:ignore[].path`). A volume the use-case declares but
   this list omits is never backed up; `/backup-use-case` setup proposes the
-  full declared list and lets the admin narrow it.
+  full declared list and lets the admin narrow it. Two kinds of volume never
+  appear here. A files volume (`source: files`) has its content in git. A
+  volume another use-case shares in through `from:` belongs to its owner,
+  and only the owner's manifest lists it.
 - **`hooks.pre_backup`** / **`hooks.post_restore`** — Arrays of
   `{container, command}`. `pre_backup` runs (via `podman exec`) before the
   volume copy, in list order; `post_restore` runs after volumes are restored

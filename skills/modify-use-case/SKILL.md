@@ -47,7 +47,7 @@ metadata:
    `nodes/<self>/node.yaml:remote_ide` and, if `vscode_server: compatible`,
    suggest connecting via VS Code Remote-SSH to `doccap@<tailscale_hostname>`
    and running `/modify-use-case` on the node instead; proceed over SSH only on
-   confirmation. If `incompatible`, note SSH is the only surface (`<reason>`)
+   confirmation `[decision: modify-use-case.continue-over-ssh]`. If `incompatible`, note SSH is the only surface (`<reason>`)
    and proceed. If `unknown`/absent, proceed and suggest re-running
    `/bootstrap-node <self>` to refresh the probe.
 
@@ -63,6 +63,11 @@ metadata:
    - Whether `has_secrets` flips (new secrets manifest needed or old one
      to retire).
    - Whether an image tag is being bumped (triggers `podman pull`).
+   - Which jobs (`spec.jobs`) the mutation adds, changes or drops.
+   - Whether a files tree (`<slug>.files/<vol>/`) changes. The mutation may be
+     nothing but such a change (an edited virtual host), with no frontmatter
+     change at all. Compare the tree's sha256 list against the node's volume
+     (`podman-quadlets` § "Files volumes", verification) to find out.
    - Which containers, networks, and volumes the mutation **adds** or
      **drops** — each one changes which on-node files exist, not just their
      content (steps 7–7c).
@@ -85,8 +90,12 @@ metadata:
    - Create the manifest if the mutation introduces the first config surface;
      leave it absent if there still is none.
 
-4. **Show the doc diff** to the admin before applying. If they decline,
-   exit without writing.
+4. **Validate, then show the doc diff** to the admin before applying. The
+   mutated document must pass the same checks as a first apply: the
+   list ⇔ `spec` invariant, pinned images, and every container's validation
+   rules in `podman-quadlets` § "Render from spec". On a failure, name the
+   container and field and exit without writing. If the admin declines the
+   diff `[decision: modify-use-case.confirm-diff]`, exit without writing.
 
 5. **Apply the diff** to the doc and any siblings (including the audit
    manifest from step 3b).
@@ -105,8 +114,10 @@ metadata:
    Classify every file as **changed**, **added** (rendered, not on disk), or
    **dropped** (on disk, no longer rendered — a container or network the
    mutation removed). Show the unified diff, including each dropped file in
-   full, to the admin; abort if they decline. If a new host port is below the
-   node's unprivileged port floor, list the floor change here too.
+   full, to the admin; abort if they decline
+   `[decision: modify-use-case.confirm-render]`. If a new host port (published, or
+   a host-network container's `listens:`) is below the node's unprivileged port
+   floor, list the floor change here too.
 
 7b. **Prepare what new units need**, before any unit starts:
    - **New volumes.** For each volume the mutation adds to `spec.volumes`,
@@ -115,7 +126,8 @@ metadata:
      `sudo install -d -o <owner> -g <group> -m <mode> /var/lib/drydocc/volumes/<slug>/<vol>`.
      Podman refuses to start a container whose bind-mount source does not
      exist, so this is not optional.
-   - **New low ports.** If a new host port is below the floor, lower it per
+   - **New low ports.** If a new host port (published or `listens:`) is below
+     the floor, lower it per
      `podman-quadlets` § "Privileged ports".
 
 7c. **Take down what the mutation dropped**, in reverse dependency order —
@@ -158,14 +170,25 @@ metadata:
     - Secrets manifest changed → re-resolve each key via `secrets`
       (env-var-first) to rewrite the env file, then restart every container
       that consumes it.
+    - Job added or changed → re-render its script and units, `daemon-reload`,
+      enable its timer, and run it once by hand as `/apply-use-case` step 8
+      does. Job dropped → its teardown per `podman-quadlets` § "Jobs",
+      alarm disarm included.
+    - Files tree changed → re-sync the volume per `podman-quadlets`
+      § "Files volumes", then restart every container that mounts it —
+      including consumers in other use-cases that mount it through `from:`,
+      which are named in the confirmation and the journal. A restart is
+      needed even for a directory mount: most services read their
+      configuration only at start.
 
 11. **Verify** with `podman ps --filter name=<slug>-`; capture
     `journalctl --user -u <unit> -n 50` for any unit not `Up`. Mark
     `outcome: partial` on failure.
 
 12. **Firewall delta.** Via the node's firewall tool
-    (`node.yaml:system_facts.firewall.tool`), add rules for new ports and
-    remove rules for ports that disappeared — concrete commands are in
+    (`node.yaml:system_facts.firewall.tool`), add rules for new top-level
+    `ports:` entries and remove rules for entries that disappeared — single
+    ports and ranges alike; concrete commands are in
     `bootstrap-node/references/hardening-recipes.md` § "Use-case port rules"
     (**Add** / **Remove**). Rules stay tagged with `<slug>`. If
     `system_facts.firewall.tag_mechanism` is `none`, old rules cannot be

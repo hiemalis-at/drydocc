@@ -10,7 +10,7 @@ The secrets manifest is a YAML file declaring which environment variables the us
 
 ```yaml
 use_case: nextcloud
-keepass_entry: "drydocc/vps-fra-01/nextcloud"
+keepass_entry: "drydocc://vps-fra-01/nextcloud"
 target_path: /etc/drydocc/secrets/nextcloud.env
 keys:
   - name: POSTGRES_PASSWORD
@@ -24,11 +24,7 @@ keys:
 ### Field Descriptions
 
 - **`use_case`** — Must equal the filename stem (e.g., `nextcloud`). Links the manifest to its corresponding use-case document. Should match `<slug>.md:name`.
-- **`keepass_entry`** — Path inside the admin's KeePass database where the secrets live (hierarchical, with `/` as separator). This is **metadata consumed by the `@max-win-at/keepassxc-secrets` skill** when a value isn't already in the environment — not a raw-CLI argument. The agent never hand-writes `keepassxc-cli`.
-
-  The path doubles as a **lookup URL** via deterministic mapping — see "KeePassXC entry setup" below. Two scoping levels:
-  - **Node-scoped** (default): `drydocc/<node>/<slug>` — e.g., `drydocc/vps-fra-01/nextcloud`
-  - **Infra-global**: `drydocc/<service>` — e.g., `drydocc/tailscale` — for credentials shared across all nodes
+- **`keepass_entry`** — The **lookup URL** of the KeePassXC entry holding the secrets: the exact value of that entry's URL field (see "KeePassXC entry setup" below). This is **metadata consumed by the `@max-win-at/keepassxc-secrets` skill** when a value isn't already in the environment — not a raw-CLI argument. The agent never hand-writes `keepassxc-cli`. Grammar and scoping levels: § "URL convention".
 - **`target_path`** — Absolute path on the node where the env file lands. Default: `/etc/drydocc/secrets/<slug>.env` (e.g., `/etc/drydocc/secrets/nextcloud.env`). Owner and permissions: `doccap:doccap`, chmod 600. Quadlet files reference this via `EnvironmentFile=<target_path>`.
 - **`keys`** — Array of secret definitions. Each key is an environment variable that will be written to the node-side env file:
   - **`name`** — Environment variable name (UPPER_SNAKE_CASE). Examples: `POSTGRES_PASSWORD`, `NEXTCLOUD_ADMIN_PASSWORD`, `API_TOKEN`.
@@ -60,22 +56,40 @@ how the agent handles that ambiguity with the user.
 
 ### URL convention
 
-The lookup URL is derived deterministically from `keepass_entry`:
+Every lookup URL has this shape (`[]` mandatory, `{}` optional):
 
 ```
-keepass_entry: "drydocc/<rest>"  →  URL field: "https://drydo.cc.local/<rest>"
+[drydocc://][node-name]{/use-case}{/user-or-detail}
 ```
 
-The host is the project's public domain `drydo.cc` with the `.local` reserved
-TLD (RFC 6762) appended — `drydo.cc.local` — so the lookup URL is unambiguous
-yet will never collide with real website credentials in the admin's vault.
-(The KeePass group prefix stays `drydocc/`; only the URL host carries the
-public domain.)
+`keepass_entry` holds the URL itself, and the entry's URL field is set to
+exactly the same string — there is no derivation step. The `drydocc://` scheme
+is never a real website, so a lookup can never match the admin's ordinary web
+credentials.
 
-| Scope | keepass_entry | URL field |
-|-------|---------------|-----------|
-| Node-scoped | `drydocc/vps-fra-01/nextcloud` | `https://drydo.cc.local/vps-fra-01/nextcloud` |
-| Infra-global | `drydocc/tailscale` | `https://drydo.cc.local/tailscale` |
+| Scope | Shape | Example |
+|-------|-------|---------|
+| Use-case (default) | `drydocc://<node>/<slug>` | `drydocc://vps-fra-01/nextcloud` |
+| Global | `drydocc://<service>` | `drydocc://tailscale`, `drydocc://ntfy` |
+| Detail | `drydocc://<node>/<scope>/<user-or-detail>` | `drydocc://vps-fra-01/backup/cold-s3`, `drydocc://vps-fra-01/ssh/doccap-at-vps-fra-01` |
+
+- **Node-name** is the node's slug (`node.yaml:name`). A **global** credential,
+  shared by every node of the fork, takes the node-name position with the
+  service's name instead. A node slug must therefore never equal a global
+  credential's name (`tailscale`, `ntfy`, …); refuse such a slug when a node is
+  scaffolded.
+- **Use-case** is the use-case slug, or a node-level scope that is not a
+  use-case: `backup` (one entry per S3 backup target), `ssh` (the node's
+  admin-client key).
+- **User-or-detail** names a separate entry only where one credential needs its
+  own entry — a backup target, a key, a second account. The env-vars of one
+  use-case still live together on **one** entry as custom fields (see "Storing
+  values in entries"), never one entry per variable.
+- **Validation.** A `keepass_entry` that does not start with `drydocc://` is
+  the earlier spelling (`drydocc/<rest>`, looked up as
+  `https://drydo.cc.local/<rest>`). Refuse it and name the rewrite: the value
+  becomes `drydocc://<rest>`, and the admin sets the entry's URL field in
+  KeePassXC to that same string.
 
 No type suffixes (`-pat`, `-key`, `-pwd`). The agent knows from context —
 the manifest's `keys[]`, `node.yaml:secrets.required_env`, or the invoking
@@ -83,15 +97,18 @@ skill — what credential type to expect and which fields to read.
 
 ### Organizing entries in KeePassXC
 
-Create a group hierarchy mirroring the `keepass_entry` path:
+Only the URL field is matched, so groups and titles are the admin's to
+choose. A hierarchy mirroring the lookup URLs keeps the vault readable:
 
 ```
 drydocc/                          ← top-level group
-├── tailscale                      ← infra-global entry (URL: https://drydo.cc.local/tailscale)
-├── github                         ← infra-global entry (URL: https://drydo.cc.local/github)
+├── tailscale                      ← global entry (URL: drydocc://tailscale)
+├── ntfy                           ← global entry (URL: drydocc://ntfy)
 └── vps-fra-01/                    ← node group
-    ├── nextcloud                  ← entry (URL: https://drydo.cc.local/vps-fra-01/nextcloud)
-    └── grafana                    ← entry (URL: https://drydo.cc.local/vps-fra-01/grafana)
+    ├── nextcloud                  ← entry (URL: drydocc://vps-fra-01/nextcloud)
+    ├── grafana                    ← entry (URL: drydocc://vps-fra-01/grafana)
+    └── backup/
+        └── cold-s3                ← detail entry (URL: drydocc://vps-fra-01/backup/cold-s3)
 ```
 
 ### Storing values in entries
@@ -108,7 +125,7 @@ name from `keys[].name`. The agent reads each field by name.
 ```
 Entry: nextcloud
   Group:    drydocc/vps-fra-01/
-  URL:      https://drydo.cc.local/vps-fra-01/nextcloud
+  URL:      drydocc://vps-fra-01/nextcloud
   Custom fields:
     POSTGRES_PASSWORD        = ****
     NEXTCLOUD_ADMIN_PASSWORD = ****
@@ -165,9 +182,9 @@ Every secret has a canonical env-var NAME (= `keys[].name`). The
    agent never reads or prints a `.env`.
 2. **keepass skill** — else, if `@max-win-at/keepassxc-secrets` is available
    (when it is not, the `secrets` skill § "Preflight: is the keepass skill
-   available?" suggests how to install it — never installs it), it derives the lookup URL from
-   `keepass_entry` (`drydocc/<rest>` → `https://drydo.cc.local/<rest>`) and
-   fetches the value via `kpxc-agent get-logins`. The agent never hand-writes
+   available?" suggests how to install it — never installs it), it passes
+   `keepass_entry` — already the lookup URL — to `kpxc-agent get-logins` and
+   fetches the value. The agent never hand-writes
    `keepassxc-cli`. Never pass `--json` (or otherwise print the raw entry)
    when only checking for existence — extract the needed field (e.g.
    `--field password`) into a variable instead, so the password never lands
@@ -224,7 +241,7 @@ sudo install -m 600 -o doccap -g doccap /dev/stdin /etc/drydocc/secrets/_notify.
 
 Current node runtime secrets: `_notify.env`, installed by `/node-notify`
 (`DOCCAP_NTFY_ADMIN_TOPIC`, `DOCCAP_NTFY_AGENT_TOPIC`, optional
-`DOCCAP_NTFY_TOKEN`; infra-global `keepass_entry: "drydocc/ntfy"`). Its schema
+`DOCCAP_NTFY_TOKEN`; global `keepass_entry: "drydocc://ntfy"`). Its schema
 is in `references/notify-manifest.md`.
 
 ## Rotation

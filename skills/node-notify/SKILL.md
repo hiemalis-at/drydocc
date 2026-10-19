@@ -91,7 +91,7 @@ exactly as it would without this one.
    - generate it per the `secrets` skill § "Node runtime secrets" — never
      accept a memorable name;
    - tell the admin exactly which KeePassXC entry and custom fields to create
-     (`drydocc/ntfy`, URL `https://drydo.cc.local/ntfy`, one field per
+     (URL `drydocc://ntfy`, one field per
      variable), or store it through the KeePassXC skill if it is available;
    - re-resolve before continuing.
 

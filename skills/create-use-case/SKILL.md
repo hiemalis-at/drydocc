@@ -33,6 +33,8 @@ metadata:
     description mentions secret-bearing services.
   - Optionally `nodes/<self>/use-cases/<slug>.audit.yaml` — the audit manifest,
     seeded with the config surfaces the description implies.
+  - Optionally `nodes/<self>/use-cases/<slug>.files/<vol>/` — configuration
+    files the admin supplies, for a volume declared `source: files`.
 - **On-node side effects:** none directly — step 8 delegates every node write
   to `/apply-use-case`.
 - **Journal scope:** `use-case/<slug>`.
@@ -96,6 +98,14 @@ metadata:
    `conventions` skill's `references/secrets.md`. Set `has_secrets: true` in the doc's
    frontmatter and set `env_from: <target_path>` on every container in
    `spec.containers` that consumes the values.
+
+5a. **If the description supplies configuration files** (a proxy's virtual
+   hosts, a server's config file), declare a volume with `source: files`,
+   write each file verbatim under `<slug>.files/<vol>/`, and mount it
+   `ro: true`. Use `subpath` when the image reads a single file at a fixed
+   path. Refuse to put a secret value into such a file: route it through
+   `env_from` (step 5), and say so if the service cannot read it from its
+   environment (`podman-quadlets` § "Files volumes").
 
 5b. **Write the audit manifest** at `<slug>.audit.yaml` per the `conventions`
    skill's `references/audit-manifest.md`. Seed `config_surfaces` from step 3 —

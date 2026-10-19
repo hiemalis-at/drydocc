@@ -142,7 +142,8 @@ the runs stop, it is delivered.
 
 **Inputs**, fixed at render time into the job's own script:
 
-- `<job>` — `maintenance`, `telemetry`, or `backup-<slug>`.
+- `<job>` — `maintenance`, `telemetry`, `backup-<slug>`, or
+  `job-<slug>-<name>` for a use-case's scheduled job.
 - `<interval-seconds>` — the **largest** gap between consecutive firings of the
   job's `OnCalendar=` expression. Compute it when rendering, from:
 

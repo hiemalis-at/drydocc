@@ -31,6 +31,7 @@ import shutil
 import socket
 import subprocess
 import sys
+import tempfile
 import time
 import uuid
 import xml.etree.ElementTree as ET
@@ -447,24 +448,39 @@ def stage_fresh_fork(wt: Path) -> None:
 
 
 def create_fork(root: Path, run: dict, repo: Path, ref: str) -> dict:
-    """A lab worktree set up as a complete, independent fork of `ref`.
+    """A standalone clone of `ref` in the lab store, set up as a complete,
+    independent fork.
 
-    upstream is the ref under test (recorded, not configured); origin is a
-    per-run bare repository served by the lab git daemon, wired in only through
-    per-worktree url rewrites so the real remotes stay unreachable from the
-    run; the fleet starts empty, and AGENTS.md is cut to what a fork receives.
-    Lab commits never flow back.
+    Standalone, not a worktree: a worktree shares the repository's refs, so an
+    agent in one run could read every other run's branch — and copied another
+    model's work from one. It also sits outside the admin's checkout, so nothing
+    an agent reads from a parent directory is the checkout's. The clone's only
+    remote is origin, a per-run bare repository served by the lab git daemon;
+    upstream is the ref under test (recorded, not configured); the fleet starts
+    empty, and AGENTS.md is cut to what a fork receives. Lab commits never flow
+    back.
     """
     repo = Path(git(repo, "rev-parse", "--show-toplevel").strip())
     ref_sha = git(repo, "rev-parse", "--verify", f"{ref}^{{commit}}").strip()
     run_id = run["run"]
     branch = f"lab/{run_id}"
-    wt = repo / ".worktrees" / f"lab-{run_id}"
+    wt = root / "forks" / run_id
     bare = root / "remotes" / f"{run_id}.git"
     if wt.exists() or bare.exists():
         raise LabError(f"fork leftovers exist for {run_id}: {wt if wt.exists() else bare}")
-    git(repo, "worktree", "add", "-q", "-b", branch, str(wt), ref_sha)
+    # the ref under test may be any commit: a transient ref makes it fetchable
+    pin = f"refs/drydocc-lab/{run_id}"
+    git(repo, "update-ref", pin, ref_sha)
     try:
+        wt.parent.mkdir(parents=True, exist_ok=True)
+        run_cmd(["git", "init", "-q", "-b", branch, str(wt)])
+        git(wt, "fetch", "-q", "--no-tags", str(repo), pin)
+        git(wt, "reset", "-q", "--hard", "FETCH_HEAD")
+        # commits an agent makes carry the identity they would in the checkout
+        for key in ("user.name", "user.email"):
+            value = git(repo, "config", "--get", key, check=False).strip()
+            if value:
+                git(wt, "config", key, value)
         # fresh fork: an empty fleet, whatever the ref's nodes/ held, and no
         # development preamble in AGENTS.md
         stage_fresh_fork(wt)
@@ -475,26 +491,7 @@ def create_fork(root: Path, run: dict, repo: Path, ref: str) -> dict:
         git(wt, "push", "-q", str(bare), f"{branch}:refs/heads/{branch}")
         run_cmd(["git", "-C", str(bare), "symbolic-ref", "HEAD", f"refs/heads/{branch}"])
         url = remote_url(run_id)
-        git(repo, "config", "extensions.worktreeConfig", "true")
-        remotes = [r for r in git(repo, "remote").split() if r]
-        for r in remotes:
-            for flag in ([], ["--push"]):
-                real = git(repo, "remote", "get-url", *flag, r, check=False)
-                if not real or not real.strip():
-                    continue
-                target = url if r == "origin" else f"git://127.0.0.1/__lab-no-{r}__.git"
-                git(wt, "config", "--worktree", "--add", f"url.{target}.insteadOf", real.strip())
-        if "origin" not in remotes:
-            git(wt, "config", "--worktree", "remote.origin.url", url)
-            git(wt, "config", "--worktree", "remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*")
-        # remote-tracking refs are shared by every worktree of the repository: a fetch
-        # here records the lab remote's branch as origin/lab/<run> in the admin's
-        # repository. That one ref is removed with the fork; what must never happen
-        # is a prune here deleting the admin's own origin/* refs, or origin/HEAD
-        # following the lab remote's HEAD.
-        for key, value in (("fetch.prune", "false"), ("remote.origin.prune", "false"),
-                           ("remote.origin.followRemoteHEAD", "never")):
-            git(wt, "config", "--worktree", key, value)
+        git(wt, "remote", "add", "origin", url)
         ensure_git_daemon(root)
         git(wt, "fetch", "-q", "origin")
         git(wt, "branch", "-q", f"--set-upstream-to=origin/{branch}")
@@ -504,16 +501,21 @@ def create_fork(root: Path, run: dict, repo: Path, ref: str) -> dict:
     except Exception:
         remove_fork(repo, wt, branch, bare)
         raise
+    finally:
+        git(repo, "update-ref", "-d", pin, check=False)
     return {"repo": str(repo), "worktree": str(wt), "branch": branch, "remote": str(bare),
             "remote_url": url, "ref": ref, "ref_sha": ref_sha}
 
 
 def remove_fork(repo: Path, wt: Path, branch: str, bare: Path) -> None:
-    git(repo, "worktree", "remove", "--force", str(wt), check=False)
-    git(repo, "worktree", "prune", check=False)
-    git(repo, "branch", "-q", "-D", branch, check=False)
-    # the tracking ref the fork's fetches left in the shared namespace (see create_fork)
-    git(repo, "update-ref", "-d", f"refs/remotes/origin/{branch}", check=False)
+    if (wt / ".git").is_dir():  # a standalone clone: nothing of it is in the admin's repository
+        shutil.rmtree(wt, ignore_errors=True)
+    else:  # a worktree fork, from before forks were standalone clones
+        git(repo, "worktree", "remove", "--force", str(wt), check=False)
+        git(repo, "worktree", "prune", check=False)
+        git(repo, "branch", "-q", "-D", branch, check=False)
+        # the tracking ref the fork's fetches left in the shared namespace
+        git(repo, "update-ref", "-d", f"refs/remotes/origin/{branch}", check=False)
     shutil.rmtree(bare, ignore_errors=True)
 
 
@@ -1068,6 +1070,16 @@ def real_tool(name: str, shim_dir: Path) -> str:
     return found or f"/usr/bin/{name}"
 
 
+# The hypervisor and disk tools under a lab node. A real box has no host to
+# repair it from, so an agent in a run gets none (lab-overlay.md § "The
+# hypervisor is out of reach"); the driver's own calls bypass the shims.
+HYPERVISOR_TOOLS = ("virsh", "virt-install", "virt-customize", "virt-sysprep", "virt-cat", "virt-copy-in",
+                    "virt-copy-out", "virt-edit", "virt-ls", "virt-viewer", "guestfish", "guestmount", "qemu-img")
+# what an agent's LIBVIRT_DEFAULT_URI is set to: no driver answers it, so even a
+# hypervisor client called by absolute path has nothing to connect to
+UNREACHABLE_LIBVIRT_URI = "drydocc-lab-out-of-reach:///"
+
+
 def write_shims(root: Path, run: dict) -> None:
     """PATH shims that keep an agent inside the run.
 
@@ -1078,6 +1090,9 @@ def write_shims(root: Path, run: dict) -> None:
     bindir = rdir / "bin"
     cfg = rdir / "ssh_config"
     kh = rdir / "known_hosts"
+    # the driver, called from inside a run, works with the laptop's real tools
+    driver = (f'env -u LIBVIRT_DEFAULT_URI PATH="$(printf %s "$PATH" | tr : "\\n" | grep -vxF "{bindir}" '
+              f'| paste -sd: -)" DRYDOCC_LAB_HOME="{root}" {sys.executable} "{Path(__file__).resolve()}"')
     shims = {
         "ssh": f'#!/bin/sh\nexec {real_tool("ssh", bindir)} -F "{cfg}" "$@"\n',
         "scp": f'#!/bin/sh\nexec {real_tool("scp", bindir)} -F "{cfg}" "$@"\n',
@@ -1096,12 +1111,11 @@ def write_shims(root: Path, run: dict) -> None:
                       f'(drydocc lab: {"tailnet off" if run.get("tailnet", "off") == "off" else "the laptop client is out of a lab run reach"})"'
                       ' >&2\nexit 1\n'),
         # the admin's out-of-band steps on lab hosts (lab-overlay.md § "Admin actions")
-        "lab-admin": (f'#!/bin/sh\nDRYDOCC_LAB_HOME="{root}" exec {sys.executable} '
-                      f'"{Path(__file__).resolve()}" admin "{run["run"]}" "$@"\n'),
+        "lab-admin": f'#!/bin/sh\nexec {driver} admin "{run["run"]}" "$@"\n',
         # the restore-point verbs of this run, for an admin's session inside it
         # (lab skill § "Prototype session") — bound to this run, nothing else
         "lab": ("#!/bin/sh\n"
-                f'lab() {{ DRYDOCC_LAB_HOME="{root}" exec {sys.executable} "{Path(__file__).resolve()}" "$@"; }}\n'
+                f'lab() {{ exec {driver} "$@"; }}\n'
                 'case "$1" in\n'
                 f'  checkpoint|reset) v=$1; shift; lab "$v" "{run["run"]}" "$@" ;;\n'
                 '  ls|tree) lab "$1" ;;\n'
@@ -1110,6 +1124,10 @@ def write_shims(root: Path, run: dict) -> None:
         "kpxc-agent": ("#!/bin/sh\n"
                        'echo "drydocc lab: the password vault is not reachable from a lab run; '
                        'lab secrets come from the environment" >&2\nexit 1\n'),
+        **{tool: ("#!/bin/sh\n"
+                  f'echo "drydocc lab: {tool} is out of reach in a lab run. Reach the node over ssh, as on a real '
+                  'box; a node that stopped answering is a finding to record, not something to repair from '
+                  'the host." >&2\nexit 126\n') for tool in HYPERVISOR_TOOLS},
     }
     for name, body in shims.items():
         p = bindir / name
@@ -1233,6 +1251,75 @@ def admin_action(root: Path, run_id: str, action: str, args: list, stdin_text: s
 AGENTS_DIR = Path(__file__).resolve().parent / "agents"
 
 
+def default_adapter() -> str:
+    """The adapter a command uses when neither its flag nor its scenario names one."""
+    return os.environ.get("DRYDOCC_LAB_ADAPTER") or "claude"
+
+
+def adapter_names() -> list:
+    return sorted(p.stem for p in AGENTS_DIR.glob("*.sh"))
+
+
+def adapter_status(adapter: str, model: str | None = None) -> dict:
+    """An adapter's own readiness report (`<adapter>.sh --check`), never a model call.
+
+    ready, cost (paid|free), model, detail — run against a throwaway HOME, so a
+    check can link credentials but never touches the admin's own agent state.
+    """
+    script = AGENTS_DIR / f"{adapter}.sh"
+    st = {"ready": False, "cost": "?", "model": "", "detail": f"no adapter {script}"}
+    if script.is_file():
+        with tempfile.TemporaryDirectory(prefix="drydocc-lab-check-") as home:
+            env = dict(os.environ, HOME=home, DRYDOCC_LAB_REAL_HOME=str(Path.home()))
+            if model:  # cost and readiness are the chosen model's, not the default's
+                env["DRYDOCC_LAB_MODEL"] = model
+            try:
+                out = subprocess.run(["bash", str(script), "--check"], env=env, stdin=subprocess.DEVNULL,
+                                     capture_output=True, text=True, timeout=120).stdout
+                st.update(json.loads(out.strip().splitlines()[-1]))
+            except (subprocess.TimeoutExpired, ValueError, IndexError):
+                st["detail"] = "its --check did not answer"
+    return dict(st, adapter=adapter)
+
+
+def qualification(root: Path, adapter: str, model: str) -> str:
+    """The latest `qualify` evidence for adapter + model: `<scenario> passed/judged, …`."""
+    for d in sorted((root / "results").glob("qualify-*"), reverse=True):
+        m = read_json(d / "matrix.json") if (d / "matrix.json").is_file() else {}
+        if m.get("adapter") != adapter:
+            continue
+        cells = [c for c in m.get("cells", []) if c["model"] == model]
+        judged = [(c["scenario"], [r for r in c["runs"] if r["verdict"] != "error"]) for c in cells]
+        judged = [(s, rs) for s, rs in judged if rs]
+        if judged:
+            return ", ".join(f"{s} {sum(r['verdict'] == 'pass' for r in rs)}/{len(rs)}" for s, rs in judged)
+    return ""
+
+
+def agent_banner(root: Path, adapter: str, model: str | None) -> list:
+    """What a lab command tells the admin about agents before its first step:
+    the one it uses and its cost, then every other adapter that is ready — or,
+    for a free one, what it still needs."""
+    statuses = {a: adapter_status(a) for a in adapter_names()}
+    cur = adapter_status(adapter, model) if model else statuses.get(adapter) or adapter_status(adapter)
+    model = model or cur["model"] or "its default model"
+    q = qualification(root, adapter, model)
+    lines = [f"agent: {adapter} / {model} ({cur['cost']})" + (f" — qualified: {q}" if q else "")]
+    if not cur["ready"]:
+        lines.append(f"  {adapter} reports not ready: {cur['detail']}")
+    for a, s in statuses.items():
+        if a == adapter:
+            continue
+        if s["ready"]:
+            aq = qualification(root, a, s["model"])
+            lines.append(f"  also ready: {a} / {s['model'] or 'its default model'} ({s['cost']})"
+                         + (f" — qualified: {aq}" if aq else "")
+                         + f" — --adapter {a}, or DRYDOCC_LAB_ADAPTER={a}")
+        elif s["cost"] == "free":
+            lines.append(f"  free option not set up: {a} — {s['detail']}")
+    return lines
+
+
 def agent_env(root: Path, run_id: str, node: str | None) -> dict:
     """The environment an agent works in inside a run — headless or attended.
 
@@ -1251,6 +1338,9 @@ def agent_env(root: Path, run_id: str, node: str | None) -> dict:
         "DRYDOCC_LAB_OVERLAY": str(wt / ".drydocc" / "lab.yaml"),
         "DRYDOCC_LAB_REAL_HOME": str(Path.home()),
     })
+    if os.environ.get("DRYDOCC_LAB_MODEL"):  # the admin's model choice is the one lab variable that passes
+        env["DRYDOCC_LAB_MODEL"] = os.environ["DRYDOCC_LAB_MODEL"]
+    env["LIBVIRT_DEFAULT_URI"] = UNREACHABLE_LIBVIRT_URI
     if node:
         if node not in run["nodes"]:
             raise LabError(f"no node {node} in run {run_id}")
@@ -1315,6 +1405,19 @@ def run_agent(root: Path, run_id: str, prompt: str, *, adapter: str, node: str |
     step = {"n": n, "prompt": prompt, "adapter": adapter, "node": node, "rc": rc,
             "verdict": verdict, "started": started, "finished": now_iso(),
             "transcript": transcript.name}
+    # optional adapter outputs: the models it used and its request count, and on
+    # exit 75 the reason as the last line of its stderr log
+    meta = Path(f"{transcript}.meta.json")
+    if meta.is_file():
+        try:
+            step.update({k: v for k, v in read_json(meta).items() if k in ("models", "requests")})
+        except ValueError:
+            pass
+    errlog = Path(f"{transcript}.stderr")
+    if verdict == "infra" and errlog.is_file():
+        tail = [ln for ln in errlog.read_text(errors="replace").splitlines() if ln.strip()]
+        if tail:
+            step["reason"] = tail[-1].strip()
     if verdict == "blocked":
         step["blocked"] = blocked.read_text()
     with store_lock(root):
@@ -1611,7 +1714,7 @@ def do_step(root: Path, run_id: str, step: dict, sc: dict, *, repo: Path, ref_sh
         spec = dict((sc.get("nodes") or {}).get(node) or {}, **{k: v for k, v in step.items()
                                                                  if k in ("from", "distro", "version", "arch")})
         spec.setdefault("from", "base")
-        layer = resolve_from(root, spec, repo=repo, ref_sha=ref_sha, log=log, adapter=sc.get("adapter", "claude"))
+        layer = resolve_from(root, spec, repo=repo, ref_sha=ref_sha, log=log, adapter=sc.get("adapter") or default_adapter())
         replace_node(root, run_id, node, layer["key"])
         return True, f"{node} is a fresh {layer['kind']} box ({layer['name']}); its git state survives"
     if action in ("reboot", "power-cycle"):
@@ -1669,11 +1772,12 @@ def baseline_failing_checks(root: Path, run_id: str) -> list:
 
 
 def run_scenario(root: Path, scenario, *, repo: Path, ref: str | None, keep: bool, log,
-                 prepare=None, adapter: str | None = None) -> dict:
+                 prepare=None, adapter: str | None = None, model: str | None = None) -> dict:
     """Run a scenario — a file, or one generated as a dict — and judge it.
 
     prepare(run_id), when given, runs once the fork exists and before any
-    node is cloned (verify-runbook installs its bundle there).
+    node is cloned (verify-runbook installs its bundle there). model, when
+    given, is the DRYDOCC_LAB_MODEL of every agent step.
     """
     path = scenario if isinstance(scenario, Path) else None
     sc = load_yaml(path) if path else scenario
@@ -1684,17 +1788,17 @@ def run_scenario(root: Path, scenario, *, repo: Path, ref: str | None, keep: boo
     run_id = f"{name}-{secrets.token_hex(3)}"
     results = root / "results" / run_id
     results.mkdir(parents=True)
-    if adapter:
-        sc = dict(sc, adapter=adapter)
+    sc = dict(sc, adapter=adapter or sc.get("adapter") or default_adapter())
+    model = model or os.environ.get("DRYDOCC_LAB_MODEL")
     report = {"scenario": name, "file": str(path) if path else sc.get("file", "(generated)"),
-              "adapter": sc.get("adapter", "claude"),
+              "adapter": sc["adapter"], "model": model,
               "run": run_id, "ref": ref, "started": now_iso(),
               "steps": [], "verdict": None}
     try:
         ref_sha = git(repo, "rev-parse", "--verify", f"{ref}^{{commit}}").strip()
         report["ref_sha"] = ref_sha
         layers = {n: resolve_from(root, spec or {}, repo=repo, ref_sha=ref_sha, log=log,
-                                  adapter=sc.get("adapter", "claude"))
+                                  adapter=sc["adapter"])
                   for n, spec in (sc.get("nodes") or {}).items()}
         with store_lock(root):
             create_run(root, run_id, "test", repo=repo, ref=ref_sha, tailnet=sc.get("tailnet", "off"))
@@ -1729,6 +1833,7 @@ def run_scenario(root: Path, scenario, *, repo: Path, ref: str | None, keep: boo
             sfile = runs_dir(root) / run_id / "secrets" / "scenario.env"
             sfile.write_text("".join(f"{k}={v}\n" for k, v in secret_env.items()))
             sfile.chmod(0o600)
+        agent_extra = dict(secret_env, **({"DRYDOCC_LAB_MODEL": model} if model else {}))
         verdict = "pass"
         for i, step in enumerate(sc.get("steps") or [], 1):
             step = expand(step, {"run": run_id})
@@ -1741,21 +1846,23 @@ def run_scenario(root: Path, scenario, *, repo: Path, ref: str | None, keep: boo
                 scale = 15 if step.get("node") and load_run(root, run_id)["nodes"][step["node"]].get("emulated") else 1
                 log(f"step {i}: agent — {label}")
                 injector = schedule_fault(root, run_id, step.get("inject"), log) if step.get("inject") else None
-                res = run_agent(root, run_id, step["agent"], adapter=sc.get("adapter", "claude"),
+                res = run_agent(root, run_id, step["agent"], adapter=sc["adapter"],
                                 node=step.get("node"), timeout=int(step.get("timeout", 3600)) * scale,
-                                env_extra=secret_env)
+                                env_extra=agent_extra)
                 if injector:
                     injector.cancel()
                 expect = step.get("expect", "done")
                 ok = (expect == "any" and res["verdict"] != "infra") or res["verdict"] == expect
                 entry = {"n": i, "name": label, "type": "agent", "verdict": res["verdict"],
                          "ok": ok, "transcript": res["transcript"], "blocked": res.get("blocked")}
+                entry.update({k: res[k] for k in ("models", "requests", "reason") if k in res})
                 if res["verdict"] == "blocked" and not ok:
                     verdict = "blocked"
                 if res["verdict"] == "infra":
                     verdict = "error"
-                    report["error"] = ("infrastructure: the agent could not run (authentication or "
-                                       "API failure, see the transcript) — not a result about the code under test")
+                    report["error"] = ("infrastructure: the agent could not run ("
+                                       + (res.get("reason") or "authentication or API failure, see the transcript")
+                                       + ") — not a result about the code under test")
             else:
                 ok, detail = check_assertion(root, run_id, step)
                 skipped, ok = ok is None, ok is not False
@@ -1822,7 +1929,15 @@ def render_report(r: dict) -> str:
     lines = [f"# Lab run {r['run']} — {r['verdict'].upper()}", "",
              f"- scenario: `{r['scenario']}` ({r['file']})",
              f"- ref: `{r['ref']}` ({r.get('ref_sha', '?')[:12]}), agent adapter `{r.get('adapter', 'claude')}`",
-             f"- started {r['started']}, finished {r['finished']}", ""]
+             f"- started {r['started']}, finished {r['finished']}"]
+    used = list(dict.fromkeys(m for s in r["steps"] for m in s.get("models") or []))
+    if used or r.get("model"):
+        requests = sum(s.get("requests") or 0 for s in r["steps"])
+        lines.append(f"- models: {', '.join(f'`{m}`' for m in used) or '`' + r['model'] + '`'}"
+                     + (f", {requests} model requests" if requests else "")
+                     + (" — a step switched models, weaker evidence for any one of them"
+                        if any(len(s.get("models") or []) > 1 for s in r["steps"]) else ""))
+    lines.append("")
     if r.get("error"):
         lines += [f"**Error:** {r['error']}", ""]
     lines += ["| # | step | result | detail |", "|---|---|---|---|"]
@@ -1843,6 +1958,132 @@ def repeat_verdict(verdicts: list) -> str:
     if passed == len(verdicts):
         return "pass"
     return "regression" if passed == 0 else "flake"
+
+
+# ------------------------------------------------------------- qualification
+
+def iso_seconds(a: str, b: str) -> int:
+    return int((dt.datetime.fromisoformat(b) - dt.datetime.fromisoformat(a)).total_seconds())
+
+
+def forked_runs(root: Path) -> list:
+    """Runs that still have a fork. A fork is a standalone clone, but it is still
+    a directory under the same user: an agent that went looking could read it."""
+    d = runs_dir(root)
+    return sorted(r.name for r in (d.iterdir() if d.is_dir() else [])
+                  if (r / "run.json").is_file() and load_run(root, r.name).get("fork"))
+
+
+def qualify(root: Path, *, adapter: str, models: list, scenarios: list, repeat: int, repo: Path,
+            ref: str | None, log, resume: str | None = None, run=run_scenario,
+            allow_visible_runs: bool = False) -> dict:
+    """Run every scenario `repeat` times on every model, one pinned model per run,
+    and keep the matrix that says which models can run drydocc.
+
+    An infrastructure error is one model's trouble (overloaded, withdrawn) until
+    shown otherwise: its cell gets one more try, then the matrix moves on. Two
+    errors in a row on different models point at the account (a daily cap, a
+    bad key) and stop the qualification. `resume` picks the same matrix up later
+    and runs only what still lacks a judged result.
+
+    Runs must not learn from each other: another run's fork is readable from
+    every run, so qualification starts only when none is left, and destroys
+    each of its own runs once the result is recorded (report and transcripts
+    stay under results/).
+    """
+    visible = forked_runs(root)
+    if visible and not allow_visible_runs:
+        raise LabError(f"runs whose forks an agent could read: {', '.join(visible)} — a model could copy their "
+                       "work. Destroy them (lab.py destroy <run>, gc --failed) or pass --allow-visible-runs")
+    if resume:
+        qdir = root / "results" / resume
+        m = read_json(qdir / "matrix.json")
+        if m["adapter"] != adapter:
+            raise LabError(f"{resume} qualifies adapter {m['adapter']}, not {adapter}")
+    else:
+        qdir = root / "results" / f"qualify-{dt.datetime.now().strftime('%Y%m%d-%H%M%S')}"
+        qdir.mkdir(parents=True)
+        m = {"adapter": adapter, "started": now_iso(), "repeat": repeat, "cells": []}
+    last_error_model = None
+    for model in models:
+        for path in scenarios:
+            name = load_yaml(path)["scenario"]
+            cell = next((c for c in m["cells"] if c["model"] == model and c["scenario"] == name), None)
+            if cell is None:
+                cell = {"model": model, "scenario": name, "runs": []}
+                m["cells"].append(cell)
+            errors_now = 0
+            while sum(r["verdict"] != "error" for r in cell["runs"]) < repeat and errors_now < 2:
+                log(f"qualify: {model} × {name}, run {len(cell['runs']) + 1}")
+                r = run(root, path, repo=repo, ref=ref, keep=False, log=log, adapter=adapter, model=model)
+                if (runs_dir(root) / r["run"] / "run.json").is_file():
+                    with store_lock(root):
+                        destroy_run(root, r["run"])
+                    res = root / "results" / r["run"]
+                    if (res / "report.json").is_file():  # the report must not promise a kept run
+                        rep = dict(read_json(res / "report.json"), collected=True)
+                        write_json(res / "report.json", rep)
+                        (res / "report.md").write_text(render_report(rep))
+                cell["runs"].append({"run": r["run"], "verdict": r["verdict"], "error": r.get("error"),
+                                     "requests": sum(s.get("requests") or 0 for s in r["steps"]),
+                                     "seconds": iso_seconds(r["started"], r["finished"])})
+                write_json(qdir / "matrix.json", m)
+                (qdir / "matrix.md").write_text(render_matrix(m, qdir.name))
+                if r["verdict"] != "error":
+                    last_error_model = None
+                    continue
+                errors_now += 1
+                if last_error_model not in (None, model):
+                    m["stopped"] = r.get("error")
+                    write_json(qdir / "matrix.json", m)
+                    (qdir / "matrix.md").write_text(render_matrix(m, qdir.name))
+                    log(f"qualify: stopped — errors on two models in a row ({r.get('error')}); "
+                        f"resume with: lab.py qualify --resume {qdir.name} …")
+                    return dict(m, id=qdir.name)
+                last_error_model = model
+                log(f"qualify: {model} × {name}: error ({r.get('error')})"
+                    + ("; one more try" if errors_now < 2 else "; moving on"))
+    m.pop("stopped", None)
+    m.pop("incomplete", None)
+    m["finished"] = now_iso()
+    if any(sum(r["verdict"] != "error" for r in c["runs"]) < repeat for c in m["cells"]):
+        m["incomplete"] = True  # some cells only erred: --resume runs them again
+    write_json(qdir / "matrix.json", m)
+    (qdir / "matrix.md").write_text(render_matrix(m, qdir.name))
+    return dict(m, id=qdir.name)
+
+
+def render_matrix(m: dict, qid: str) -> str:
+    """Pass rate per model × scenario; infrastructure errors are counted apart,
+    never as failures."""
+    models = list(dict.fromkeys(c["model"] for c in m["cells"]))
+    names = list(dict.fromkeys(c["scenario"] for c in m["cells"]))
+    lines = [f"# Qualification {qid} — adapter `{m['adapter']}`", "",
+             f"Each cell: passed/judged runs, median model requests, median minutes"
+             f" (infrastructure errors are not judged). Target: {m['repeat']} judged runs per cell.", ""]
+    if m.get("stopped"):
+        lines += [f"**Stopped:** {m['stopped']} — resume with `lab.py qualify --resume {qid}`.", ""]
+    elif m.get("incomplete"):
+        lines += [f"**Incomplete:** some cells ended only in errors — `lab.py qualify --resume {qid}` "
+                  "runs them again.", ""]
+    lines += ["| model | " + " | ".join(names) + " | overall |", "|---" * (len(names) + 2) + "|"]
+    for model in models:
+        row, passed, judged = [], 0, 0
+        for name in names:
+            c = next((c for c in m["cells"] if c["model"] == model and c["scenario"] == name), None)
+            rs = [r for r in (c or {}).get("runs", []) if r["verdict"] != "error"]
+            errs = len((c or {}).get("runs", [])) - len(rs)
+            if not rs:
+                row.append("—" + (f" ({errs} error)" if errs else ""))
+                continue
+            p = sum(r["verdict"] == "pass" for r in rs)
+            passed, judged = passed + p, judged + len(rs)
+            med = lambda k: sorted(r[k] for r in rs)[len(rs) // 2]  # noqa: E731
+            row.append(f"{p}/{len(rs)}, {med('requests')} req, {round(med('seconds') / 60)} min"
+                       + (f" ({errs} error)" if errs else ""))
+        row.append(f"{passed}/{judged}" if judged else "—")
+        lines.append(f"| `{model}` | " + " | ".join(row) + " |")
+    return "\n".join(lines) + "\n"
 
 
 # ---------------------------------------------------------------- prototypes
@@ -2097,9 +2338,9 @@ def emit_yaml(obj, indent: int = 0) -> str:
 
 
 def rescope_entry(entry: str, old: str, target: str) -> str:
-    """drydocc/<old>/… → drydocc/<target>/…; infra-global entries stay."""
-    if entry == f"drydocc/{old}" or entry.startswith(f"drydocc/{old}/"):
-        return f"drydocc/{target}" + entry[len(f"drydocc/{old}"):]
+    """drydocc://<old>[/…] → drydocc://<target>[/…]; global entries stay."""
+    if entry == f"drydocc://{old}" or entry.startswith(f"drydocc://{old}/"):
+        return f"drydocc://{target}" + entry[len(f"drydocc://{old}"):]
     return entry
 
 
@@ -2194,10 +2435,8 @@ def portable_maintenance(text: str) -> str:
 
 
 def portable_secrets(text: str, old: str, target: str) -> str:
-    text = re.sub(r"^(keepass_entry:\s*[\"']?)([^\"'\s#]+)",
+    return re.sub(r"^(keepass_entry:\s*[\"']?)([^\"'\s#]+)",
                   lambda m: m.group(1) + rescope_entry(m.group(2), old, target), text, flags=re.M)
-    # the entry's lookup URL, where a comment spells it out (secrets.md § "URL convention")
-    return re.sub(rf"(drydo\.cc\.local/){re.escape(old)}(?=/|[\s\"']|$)", rf"\g<1>{target}", text, flags=re.M)
 
 
 def recovery_order(docs: dict) -> tuple:
@@ -2417,8 +2656,8 @@ def render_runbook(rb: dict) -> str:
     for s in pre["secrets"]:
         opt = " (optional)" if s.get("optional") else ""
         lines.append(f"- **KeePass entry `{s['entry']}`**{opt} for {s['for']}: "
-                     f"{', '.join(f'`{k}`' for k in s['keys'])}. Its URL field follows the conventions "
-                     "skill's `references/secrets.md`.")
+                     f"{', '.join(f'`{k}`' for k in s['keys'])}. Its URL field is exactly that "
+                     "lookup URL (the conventions skill's `references/secrets.md`).")
     for b in pre["backup_targets"]:
         lines.append(f"- **Backup target `{b}`** declared in your fork (`nodes/backup-targets.yaml`).")
     lines += ["", "## Steps", "",
@@ -2815,14 +3054,47 @@ def cmd_agent(root, a):
     sys.exit({"done": 0, "blocked": 2}.get(step["verdict"], 1))
 
 
+def log_agents(root, adapter, model, log) -> None:
+    for line in agent_banner(root, adapter, model):
+        log(line)
+
+
+def cmd_agents(root, a):
+    print(f"{'adapter':10} {'ready':6} {'cost':5} {'model':48} qualified / detail")
+    for name in adapter_names():
+        s = adapter_status(name)
+        q = qualification(root, name, s["model"]) if s["model"] else ""
+        print(f"{name + (' *' if name == default_adapter() else ''):10} {'yes' if s['ready'] else 'no':6} "
+              f"{s['cost']:5} {s['model'] or '-':48} {q or s['detail']}")
+    print("\n* the default (DRYDOCC_LAB_ADAPTER, else claude). Pick per command with --adapter, "
+          "the model with --model or DRYDOCC_LAB_MODEL; lab.py qualify measures which models pass.")
+
+
+def cmd_qualify(root, a):
+    log = lambda m: print(f"[lab] {m}", flush=True)  # noqa: E731
+    adapter = a.adapter or default_adapter()
+    models = [m.strip() for m in a.models.split(",") if m.strip()]
+    log_agents(root, adapter, models[0] if models else None, log)
+    log(f"qualifying: {', '.join(models)}")
+    scenarios = [Path(p).resolve() for p in a.scenario]
+    m = qualify(root, adapter=adapter, models=models, scenarios=scenarios, repeat=a.repeat,
+                repo=Path(a.repo), ref=a.ref, log=log, resume=a.resume,
+                allow_visible_runs=a.allow_visible_runs)
+    log(f"matrix: {root / 'results' / m['id'] / 'matrix.md'}")
+    print(render_matrix(m, m["id"]))
+    sys.exit(1 if m.get("stopped") or m.get("incomplete") else 0)
+
+
 def cmd_run(root, a):
     log = lambda m: print(f"[lab] {m}", flush=True)  # noqa: E731
+    sc_adapter = load_yaml(Path(a.scenario)).get("adapter") if Path(a.scenario).is_file() else None
+    log_agents(root, a.adapter or sc_adapter or default_adapter(), a.model, log)
     verdicts = []
     for i in range(a.repeat):
         if a.repeat > 1:
             log(f"repeat {i + 1}/{a.repeat}")
         r = run_scenario(root, Path(a.scenario).resolve(), repo=Path(a.repo), ref=a.ref, keep=a.keep, log=log,
-                         adapter=a.adapter)
+                         adapter=a.adapter, model=a.model)
         verdicts.append(r["verdict"])
         log(f"{r['run']}: {r['verdict']} — report {root / 'results' / r['run'] / 'report.md'}")
     if a.repeat > 1:
@@ -2927,10 +3199,12 @@ def cmd_up(root, a):
     log = lambda m: print(f"[lab] {m}", flush=True)  # noqa: E731
     defaults = {"from": a.from_, "distro": a.distro, "version": a.version, "arch": a.arch}
     specs = dict(parse_node_spec(s, defaults) for s in a.node)
+    log_agents(root, a.adapter, None, log)
     run = proto_up(root, a.proto, specs, repo=Path(a.repo), ref=a.ref, ttl=a.ttl, log=log, adapter=a.adapter)
     print(f"prototype {a.proto}: {', '.join(sorted(run['nodes']))}; fork {run['fork']['worktree']}; "
           f"expires {run['expires']}")
-    print(f"work in it: lab.py shell {a.proto} --agent claude   (or: lab.py shell {a.proto} for a plain shell)")
+    print(f"work in it: lab.py shell {a.proto} --agent {a.adapter}   (or: lab.py shell {a.proto} for a plain shell;"
+          f" lab.py agents lists the others)")
 
 
 def cmd_shell(root, a):
@@ -3026,6 +3300,7 @@ def cmd_extract(root, a):
 
 def cmd_verify_runbook(root, a):
     log = lambda m: print(f"[lab] {m}", flush=True)  # noqa: E731
+    log_agents(root, a.adapter, None, log)
     r = verify_runbook(root, a.bundle, repo=Path(a.repo), fw_ref=a.ref, adapter=a.adapter, keep=a.keep, log=log)
     log(f"{r['run']}: {r['verdict']} — report {root / 'results' / r['run'] / 'report.md'}")
     sys.exit(0 if r["verdict"] == "pass" else (2 if r["verdict"] == "blocked" else 1))
@@ -3087,7 +3362,7 @@ def build_parser():
 
     ag = sub.add_parser("agent", help="run one headless agent step in a run's fork")
     ag.add_argument("run"); ag.add_argument("prompt", nargs="?")
-    ag.add_argument("--prompt-file"); ag.add_argument("--adapter", default="claude")
+    ag.add_argument("--prompt-file"); ag.add_argument("--adapter", default=default_adapter())
     ag.add_argument("--node", help="node this step targets (its root password goes in the env)")
     ag.add_argument("--timeout", type=int, default=3600, help="seconds")
     ag.add_argument("--env", action="append", default=[], help="extra KEY=VALUE for the agent")
@@ -3098,8 +3373,25 @@ def build_parser():
     ru.add_argument("--ref", help="override the scenario's ref")
     ru.add_argument("--repeat", type=int, default=1)
     ru.add_argument("--keep", action="store_true", help="keep a passing run instead of collecting it")
-    ru.add_argument("--adapter", help="agent adapter (scripts/lab/agents/<name>.sh); overrides the scenario's")
+    ru.add_argument("--adapter", help="agent adapter (scripts/lab/agents/<name>.sh); overrides the scenario's "
+                    "(default: DRYDOCC_LAB_ADAPTER, else claude)")
+    ru.add_argument("--model", help="model for every agent step, in the adapter's naming "
+                    "(default: DRYDOCC_LAB_MODEL, else the adapter's)")
     ru.set_defaults(fn=cmd_run)
+
+    sub.add_parser("agents", help="the agent adapters: ready or not, cost, model, qualification"
+                   ).set_defaults(fn=cmd_agents)
+
+    qu = sub.add_parser("qualify", help="run scenarios on each model and keep the pass-rate matrix")
+    qu.add_argument("scenario", nargs="+"); qu.add_argument("--models", required=True,
+                                                            help="comma-separated, one pinned model per run")
+    qu.add_argument("--adapter", help="default: DRYDOCC_LAB_ADAPTER, else claude")
+    qu.add_argument("--repeat", type=int, default=2, help="judged runs per model × scenario (default 2)")
+    qu.add_argument("--repo", default="."); qu.add_argument("--ref", help="override the scenarios' ref")
+    qu.add_argument("--resume", help="a stopped qualification's id (qualify-…): run only what it lacks")
+    qu.add_argument("--allow-visible-runs", action="store_true",
+                    help="start although other runs' forks exist (their work is readable to the agent)")
+    qu.set_defaults(fn=cmd_qualify)
 
     ad = sub.add_parser("admin", help="perform an admin's out-of-band step on a lab host")
     ad.add_argument("run"); ad.add_argument("action"); ad.add_argument("args", nargs="*")
@@ -3151,7 +3443,8 @@ def build_parser():
     up.add_argument("--distro"); up.add_argument("--version"); up.add_argument("--arch")
     up.add_argument("--repo", default="."); up.add_argument("--ref", default="HEAD")
     up.add_argument("--ttl", help=f"collected by gc this long from now (default {PROTOTYPE_TTL})")
-    up.add_argument("--adapter", default="claude", help="agent adapter that builds a missing commissioned layer")
+    up.add_argument("--adapter", default=default_adapter(),
+                    help="agent adapter that builds a missing commissioned layer")
     up.set_defaults(fn=cmd_up)
 
     sl = sub.add_parser("shell", help="work inside a run: its fork, shims and keys (--agent to start one)")
@@ -3182,7 +3475,7 @@ def build_parser():
     vr = sub.add_parser("verify-runbook", help="replay a bundle on a fresh base box and stamp it")
     vr.add_argument("bundle"); vr.add_argument("--repo", default=".")
     vr.add_argument("--ref", default="HEAD", help="framework ref to replay with (default: HEAD)")
-    vr.add_argument("--adapter", default="claude")
+    vr.add_argument("--adapter", default=default_adapter())
     vr.add_argument("--keep", action="store_true", help="keep a passing replay instead of collecting it")
     vr.set_defaults(fn=cmd_verify_runbook)
 

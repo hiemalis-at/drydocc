@@ -43,10 +43,19 @@ metadata:
    form. When `on_client` and `nodes/<self>/node.yaml:remote_ide.vscode_server`
    is `compatible`, first suggest connecting via VS Code Remote-SSH to
    `doccap@<tailscale_hostname>` and running `/remove-use-case` on the node
-   instead; proceed over SSH only on confirmation.
+   instead; proceed over SSH only on confirmation
+   `[decision: remove-use-case.continue-over-ssh]`.
 
-2. **Confirm with the admin.** Spell out:
-   - Which units will be stopped and removed (`<slug>-*.service`).
+1b. **Refuse while a shared volume is in use.** If any `spec.volumes.<vol>`
+   sets `shared: true`, look for another use-case on this node, not retired,
+   whose spec mounts `from: <slug>/<vol>`. If one exists, stop:
+   `<slug> owns <vol>, which <consumer> still mounts. Remove or modify <consumer> first.`
+
+2. **Confirm with the admin** `[decision: remove-use-case.confirm]`. Spell
+   out:
+   - Which units will be stopped and removed (`<slug>-*.service`), and every
+     job's timer, service and script (`drydocc-job-<slug>-*`), each torn down
+     per `podman-quadlets` § "Jobs", alarm disarm included.
    - That on-node quadlets and firewall rules will be removed.
    - If `<slug>.backup.yaml` exists: the backup timer will be disabled and
      removed, but every snapshot already on the target is **preserved** —
@@ -56,9 +65,11 @@ metadata:
      **preserved** — the retired doc carries a paste-able cleanup
      snippet for the admin to run when they want a clean slate.
 
-3. **Stop units** in reverse dependency order:
+3. **Stop units** in reverse dependency order, jobs first, so no job starts a
+   container that is being removed:
 
    ```bash
+   systemctl --user disable --now drydocc-job-<slug>-<name>.timer   # each job (full teardown: podman-quadlets § "Jobs")
    systemctl --user stop <slug>-<container>.service   # each container
    systemctl --user stop <slug>-<network>-network.service   # each network
    ```
@@ -88,7 +99,8 @@ metadata:
    volumes, it is data, and the retired `<slug>.audit.yaml` baseline is what
    gives it meaning.
 
-5. **Remove firewall rules** for each `ports:` entry via the node's firewall
+5. **Remove firewall rules** for each top-level `ports:` entry (single port
+   or range) via the node's firewall
    tool (`node.yaml:system_facts.firewall.tool`), per
    `bootstrap-node/references/hardening-recipes.md` § "Use-case port rules"
    → **Remove**. Prefer the enumerate-then-remove form given there — a

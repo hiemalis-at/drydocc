@@ -19,10 +19,38 @@ scripts/lab/lab.py tree
 `--nvram` is required for a UEFI guest (every emulated aarch64 guest): the boot
 entry lives there.
 
+## Agents
+
+```sh
+scripts/lab/lab.py agents        # every adapter: ready or not, paid or free, model, qualification
+```
+
+Every agent-driving verb (`run`, `qualify`, `up`, `verify-runbook`, `agent`)
+takes `--adapter <name>`; the default is `$DRYDOCC_LAB_ADAPTER`, else `claude`.
+The model is `--model` on `run`, else `$DRYDOCC_LAB_MODEL`, else the
+adapter's own. A `pi` model may be a comma-separated fallback chain. Setting
+up an adapter — the free `pi` one included — is in `scripts/lab/agents/README.md`.
+
+## Qualification
+
+```sh
+scripts/lab/lab.py qualify lab/scenarios/whoami.yaml lab/scenarios/web-db.yaml \
+  --adapter pi --models <model>,<model> [--repeat 2]
+scripts/lab/lab.py qualify … --resume qualify-<YYYYmmdd-HHMMSS>   # after a stop
+```
+
+One pinned model per run. Writes `results/qualify-*/matrix.md` in the lab store.
+A model that errs (overloaded, withdrawn) gets one more try, then the matrix
+moves on; errors on two models in a row — usually a daily cap — stop it. Either
+way it exits 1, and `--resume` runs only the cells still missing judged runs.
+It starts only when no other run's fork exists, since an agent could read one
+and copy its work (`--allow-visible-runs` overrides), and it destroys each of
+its own runs once recorded; reports and transcripts stay under `results/`.
+
 ## Test runs
 
 ```sh
-scripts/lab/lab.py run lab/scenarios/<name>.yaml [--repeat N] [--keep] [--ref <ref>] [--adapter vibe]
+scripts/lab/lab.py run lab/scenarios/<name>.yaml [--repeat N] [--keep] [--ref <ref>] [--adapter <name>] [--model <id>]
 scripts/lab/lab.py runs
 scripts/lab/lab.py shell <run>                      # look around a kept run
 scripts/lab/lab.py gc [--failed [--older-than 7d]] [--budget 200G] [--dry-run]
@@ -77,7 +105,7 @@ node on the tailnet, logs it out at once and ends the run with an error.
 ```sh
 scripts/lab/lab.py up <proto> --node web [--node db=base] [--node web=<restore point>] \
   --distro <os-release ID> --version <VERSION_ID> [--arch aarch64] [--ttl 7d]
-scripts/lab/lab.py shell <proto> --agent claude     # the admin's agent, inside the prototype
+scripts/lab/lab.py shell <proto> --agent <adapter>  # the chosen agent, inside the prototype
 scripts/lab/lab.py shell <proto> [--node <n>] [-- <command>]
 scripts/lab/lab.py answer <proto> <decision id>=<answer> …     # before a headless step
 scripts/lab/lab.py agent <proto> "<prompt>" --node <n> [--timeout <s>]

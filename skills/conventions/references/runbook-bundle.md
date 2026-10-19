@@ -41,8 +41,8 @@ documents and its journal.
   `last_applied_commit` `null` (`use-case-doc.md`): on the new box nothing has
   been applied. Everything else, including the body, is carried.
 - **Secrets manifests** — a node-scoped `keepass_entry`
-  (`drydocc/<prototype>/<slug>`) becomes `drydocc/<target>/<slug>`; an
-  infra-global one is unchanged. **No value** is ever exported: lab secrets are
+  (`drydocc://<prototype>/…`) becomes `drydocc://<target>/…`; a global one
+  (`drydocc://tailscale`) is unchanged. **No value** is ever exported: lab secrets are
   generated per run and die with it.
 - **Audit, backup and maintenance manifests** — the authored half only. The
   skill-written halves (`audit-manifest.md`, including `telemetry`'s learned
@@ -71,8 +71,8 @@ source:                       # where the bundle came from
 prerequisites:
   hardware: one aarch64 machine with a fresh … install, reachable over SSH as root …
   secrets:                    # KeePass entries to create before the steps
-    - {entry: drydocc/tailscale, keys: [DOCCAP_TS_KEY], for: node, optional: false}
-    - {entry: drydocc/pi-home-01/dbadmin, keys: [POSTGRES_PASSWORD], for: dbadmin, optional: false}
+    - {entry: "drydocc://tailscale", keys: [DOCCAP_TS_KEY], for: node, optional: false}
+    - {entry: "drydocc://pi-home-01/dbadmin", keys: [POSTGRES_PASSWORD], for: dbadmin, optional: false}
   backup_targets: [nas-primary]   # names the backup manifests use; the fork must declare them
 steps:                        # in order
   - {id: bootstrap, kind: skill, run: '/bootstrap-node pi-home-01 "web"', note: …}

@@ -64,8 +64,8 @@ metadata:
 - For **`source: vm`**: the laptop is a qemu/kvm host (`virt-install`,
   `qemu-img`, `genisoimage`/`cloud-localds` available — see `provision-vm`).
 - A way to supply `DOCCAP_TS_KEY` per `secrets` § "Session secrets": either
-  the `@max-win-at/keepassxc-secrets` skill (KeePass entry `drydocc/tailscale`
-  with URL `https://drydo.cc.local/tailscale`), or a `.env` holding it.
+  the `@max-win-at/keepassxc-secrets` skill (a KeePass entry with URL
+  `drydocc://tailscale`), or a `.env` holding it.
   Resolved env-var-first and just-in-time in Phase 3, not at the start of the
   run.
 - Admin rights on the fork's git host, to add the node's deploy key with
@@ -127,7 +127,7 @@ it stopped.
    `provisioning.source: <source>`, `hardening.*: unknown`,
    `created: <today>`, `last_bootstrapped: null`); also write a
    `secrets.required_env` block declaring `DOCCAP_TS_KEY` (required, `keepass_entry:
-   drydocc/tailscale`) per `conventions`. Create empty `journal/` and `use-cases/` (`.gitkeep`).
+   drydocc://tailscale`) per `conventions`. Create empty `journal/` and `use-cases/` (`.gitkeep`).
    The journal dir must exist now — every subsequent state change journals
    (invariant 2).
 6. **Do not resolve session secrets here.** The tailscale key is resolved

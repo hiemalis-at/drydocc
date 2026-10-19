@@ -26,9 +26,10 @@ Two kinds of run share one substrate:
   bundle for a real box. Contract: the `conventions` skill's
   `references/runbook-bundle.md`.
 
-Each run is a fork of the admin's repository — its own worktree, an empty
-fleet, `AGENTS.md` exactly as a release ships it, a lab remote as `origin` — so nothing in a run reaches the real fork,
-the real remotes, `~/.ssh`, the tailnet or the vault. A runbook bundle,
+Each run is a fork of the admin's repository — a standalone clone in the lab
+store with an empty fleet, `AGENTS.md` exactly as a release ships it, and a
+lab remote as its only remote — so nothing in a run reaches the real fork, the
+real remotes, another run's work, `~/.ssh`, the tailnet or the vault. A runbook bundle,
 through `promote`, is the only thing that ever leaves.
 
 ## Contract
@@ -43,7 +44,7 @@ through `promote`, is the only thing that ever leaves.
   empty OS of the wanted distribution, version and architecture — must be in
   the store; § "Base layers".
 - **Writes:** only the lab store (`${XDG_DATA_HOME:-~/.local/share}/drydocc-lab`,
-  or `$DRYDOCC_LAB_HOME`), the run worktrees under `.worktrees/`, and, on
+  or `$DRYDOCC_LAB_HOME`), which also holds every run's fork, and, on
   `promote`, one new branch `promote/<target>` in the admin's repository.
 - **Journal scope:** none of its own outside a run. Inside a run, every skill
   journals as usual; the driver journals the clones, resets and promotions it
@@ -62,6 +63,17 @@ through `promote`, is the only thing that ever leaves.
 
 ## Procedure
 
+### Choose the agent
+
+Before a test run, a qualification or a prototype, run `agents` and show the
+admin what it lists: each adapter, ready or not, paid or free, its model, and
+the scenarios that model has passed in a qualification. Recommend the cheapest
+ready agent whose model has qualified on the scenarios at hand, and Claude
+where no free model has. Then ask which to use, and pass it as `--adapter` (and
+`--model`). An adapter that is not ready shows what it needs; offer the setup
+in `scripts/lab/agents/README.md` instead of a silent fallback. In an
+unattended lab run, do not ask: use the configured default.
+
 ### Base layers
 
 A run's nodes are clones of sealed layers. The tree grows from **base
@@ -76,14 +88,25 @@ and `layer-import` it as `--kind base`. Pin it.
 
 1. Pick or write a scenario: the shipped examples under `lab/scenarios/`
    (`whoami`, `web-db`) show the shape.
-2. `run` it — `--repeat N` for a pass rate, since an agent is
-   nondeterministic. A run against a ref with a changed bootstrap first
+2. `run` it with the chosen agent — `--repeat N` for a pass rate, since an
+   agent is nondeterministic. A run against a ref with a changed bootstrap first
    rebuilds the commissioned layer (minutes on a native guest, much longer
    under emulation); say so before starting.
 3. Read the verdict from the report the run names (`report.md`), never from
    the transcript's prose: `pass` is collected, `fail` and `blocked` are kept
    for inspection (`shell` into it), `error` says nothing about the code
-   under test — re-run it.
+   under test — re-run it. With a cheaper model, a `fail` is either the
+   skill or the model: the same scenario passing on a stronger model
+   points to the model.
+
+### Qualify a cheaper model
+
+To learn whether a free or cheaper model can run drydocc, `qualify` the
+candidates on the scenarios that matter. Each run pins one model. Show the
+admin the matrix it writes: pass rate, requests and minutes per model and
+scenario. A free tier's daily cap stops it — say when, and `--resume` it
+another day. When the admin agrees, reorder `scripts/lab/agents/pi/models`
+by the matrix.
 
 ### A real tailnet, ephemerally
 
@@ -104,7 +127,7 @@ conversation. The lab logs its nodes out when it destroys them.
    bootstrapped, hardened, no use-cases — or from `base` to prototype the
    bootstrap itself, or from a restore point by name. Tell the admin the
    prototype's TTL (default seven days) and that `ttl` re-arms it.
-2. **Work in it.** `shell <proto> --agent <adapter>` starts the admin's agent
+2. **Work in it.** `shell <proto> --agent <adapter>` starts the chosen agent
    inside the prototype's fork, with its keys and shims — there the admin
    runs `/create-use-case`, `/apply-use-case`, `/audit-use-case` and the rest
    against the lab nodes exactly as against real ones. Alternatively, drive

@@ -103,7 +103,9 @@ the application behind them.
    touched):
 
    1. **Analyse the declaration** using only generic signals: for each
-      declared volume, which container(s) mount it and at what target, `ro`
+      declared volume (never a files volume, whose content is in git, and
+      never a `from:` mount, which its owner backs up), which container(s)
+      mount it and at what target, `ro`
       vs read-write, whether the mount target matches a common data-directory
       shape, `depends_on` topology, and any `config_surfaces` from
       `<slug>.audit.yaml` if present. Classify against

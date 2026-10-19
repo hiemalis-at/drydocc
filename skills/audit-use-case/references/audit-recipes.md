@@ -24,17 +24,26 @@ One bundled script, emitting stable `<key>=<value>` lines, in the shape
 stdin closed, never as a `bash -s` heredoc that a prompting command could
 swallow. `$SLUG` is the use-case slug; `$CONTAINERS`,
 `$NETWORKS`, `$VOLUMES` are space-separated names read from the doc's
-frontmatter; `$MIGRATION_UNIT` is the optional `unit:` line from the doc's
-`## Migration` section body. The three `FIREWALL_*` values come from
+frontmatter; `$MIGRATION_UNITS` are the doc's `## Migration` `units:` entries
+(or its single `unit:`), `$LEGACY_OWNER` its `owner:` and `$LEGACY_NAMES` the
+legacy names its `containers:` pairs map to (the spec keys themselves when the
+line is absent). The three `FIREWALL_*` values come from
 `node.yaml:system_facts.firewall`, not from the doc. Multi-value keys
-(`container=`, `unit=`, `port=`, `firewall=`, `quadlet=`) accumulate.
+(`container=`, `unit=`, `port=`, `firewall=`, `quadlet=`, `filehash=`,
+`shared=`, `jobfile=`, `jobtimer=`, `joblast=`, `migration_unit=`,
+`legacy_container=`, `volns=`) accumulate.
 
 ```bash
 SLUG=<slug>
 CONTAINERS="<space-separated container names>"
 NETWORKS="<space-separated network names>"
 VOLUMES="<space-separated volume names>"
-MIGRATION_UNIT=<optional: value of unit: line from ## Migration section body, or empty if no Migration section>
+FILES_VOLUMES="<space-separated names of the volumes that declare source: files; empty if none>"
+SHARED_MOUNTS="<space-separated <owner-slug>/<vol> values of every from: mount; empty if none>"
+JOBS="<space-separated spec.jobs names; empty if none>"
+MIGRATION_UNITS="<space-separated units: entries (a unit:, as one entry) from ## Migration; empty if none>"
+LEGACY_OWNER=<owner: from ## Migration; empty when absent or doccap>
+LEGACY_NAMES="<space-separated legacy container names, only when LEGACY_OWNER is set>"
 FIREWALL_TOOL=<node.yaml:system_facts.firewall.tool — verbatim, whatever the probe recorded; the set is open, not two values, not a fixed list>
 FIREWALL_TAG_MECHANISM=<node.yaml:system_facts.firewall.tag_mechanism — verbatim; `none` means no rule on this node can carry the slug>
 FIREWALL_READBACK=<rule-listing command for this tool, from § "Observed dialects" below; EMPTY when no verified idiom exists for it — never a guess>
@@ -72,10 +81,29 @@ done
 # Networks
 podman network ls --filter "name=^$SLUG-" --format 'network={{.Name}}' 2>/dev/null
 
-# Volumes — bind directories, NOT `podman volume ls` (no .volume units are emitted)
+# Volumes — bind directories, NOT `podman volume ls` (no .volume units are emitted).
+# volns= is the same directory as doccap's containers see it, for owner: container:<uid>:<gid>
 for v in $VOLUMES; do
   stat -c "volume=$v|%U:%G|%a" "/var/lib/drydocc/volumes/$SLUG/$v" 2>/dev/null \
     || echo "volume=$v|absent|"
+  podman unshare stat -c "volns=$v|%u:%g|%a" "/var/lib/drydocc/volumes/$SLUG/$v" 2>/dev/null \
+    || echo "volns=$v|unknown|"
+done
+
+# Files volumes — one line per file: relative path and sha256, never content
+for v in $FILES_VOLUMES; do
+  d="/var/lib/drydocc/volumes/$SLUG/$v"
+  if [ ! -d "$d" ]; then echo "filehash=$v|absent|"; continue; fi
+  out=$(cd "$d" && find . -type f -print0 | sort -z | xargs -0r sha256sum) \
+    || { echo "filehash=$v|unreadable|"; continue; }
+  [ -n "$out" ] || { echo "filehash=$v|empty|"; continue; }
+  printf '%s\n' "$out" | sed "s|^\([0-9a-f]*\)  \./\(.*\)\$|filehash=$v\|\2\|\1|"
+done
+
+# Shared volumes this use-case reads — the owner's directory must exist
+for m in $SHARED_MOUNTS; do
+  if [ -d "/var/lib/drydocc/volumes/$m" ]; then echo "shared=$m|present"
+  else echo "shared=$m|absent"; fi
 done
 
 # Listening ports
@@ -108,17 +136,28 @@ else
   echo "envfile=absent|"
 fi
 
-# Host-level unit from ## Migration section (unit: field)
-if [ -n "$MIGRATION_UNIT" ]; then
-  enabled=$(systemctl is-enabled "$MIGRATION_UNIT" 2>/dev/null || true)
-  if [ -z "$enabled" ]; then
-    enabled="unknown"
-  fi
-  active=$(systemctl is-active "$MIGRATION_UNIT" 2>/dev/null || true)
-  if [ -z "$active" ]; then
-    active="unknown"
-  fi
-  echo "migration_unit=$MIGRATION_UNIT|$enabled|$active"
+# Units the use-case replaced, from ## Migration units: — a system unit bare,
+# a user's own unit as <user>/<unit>, asked of that user's manager
+for u in $MIGRATION_UNITS; do
+  case "$u" in
+    */*) sc="sudo -n systemctl --user -M ${u%%/*}@"; unit="${u#*/}" ;;
+    *)   sc="systemctl"; unit="$u" ;;
+  esac
+  enabled=$($sc is-enabled "$unit" 2>/dev/null || true); [ -n "$enabled" ] || enabled="unknown"
+  active=$($sc is-active "$unit" 2>/dev/null || true);   [ -n "$active" ]  || active="unknown"
+  echo "migration_unit=$u|$enabled|$active"
+done
+
+# Legacy containers of another owner — after the cut-over none may run
+if [ -n "$LEGACY_OWNER" ]; then
+  OUID=$(id -u "$LEGACY_OWNER" 2>/dev/null) || OUID=""
+  for n in $LEGACY_NAMES; do
+    st=$( [ -n "$OUID" ] && sudo -n -u "$LEGACY_OWNER" XDG_RUNTIME_DIR="/run/user/$OUID" \
+          podman inspect "$n" --format '{{.State.Status}}' 2>/dev/null ) || st=""
+    if [ -z "$OUID" ]; then echo "legacy_container=$n|unknown"
+    elif [ -n "$st" ]; then echo "legacy_container=$n|$st"
+    else echo "legacy_container=$n|absent"; fi
+  done
 fi
 
 # Quadlets — full text, for the render comparison
@@ -130,6 +169,25 @@ for f in ~/.config/containers/systemd/"$SLUG"-*.container \
     cat "$f"
     echo "--->8---"
   fi
+done
+
+# Jobs — rendered files (same comparison as quadlets), timer state, last run
+for f in ~/.config/drydocc/job-"$SLUG"-*.sh \
+         ~/.config/systemd/user/drydocc-job-"$SLUG"-*.service \
+         ~/.config/systemd/user/drydocc-job-"$SLUG"-*.timer; do
+  if [ -f "$f" ]; then
+    echo "jobfile=$f"
+    echo "---8<---"
+    cat "$f"
+    echo "--->8---"
+  fi
+done
+for j in $JOBS; do
+  systemctl --user show "drydocc-job-$SLUG-$j.timer" \
+    -p UnitFileState -p ActiveState --value 2>/dev/null \
+    | paste -sd'|' - | sed "s/^/jobtimer=$j|/"
+  last=$(tail -n 1 "/var/lib/drydocc/jobs/$SLUG-$j.log" 2>/dev/null) || last=""
+  echo "joblast=$j|${last:-never}"
 done
 ```
 
@@ -177,29 +235,36 @@ Compare the rendered `{filename: ini-text}` dict against the `quadlet=` blocks:
 
 | Category | Compare | `OK` ⇔ | `DRIFT` ⇔ | `UNKNOWN` ⇔ |
 |---|---|---|---|---|
-| Containers | `container=` vs `containers:` | every declared container present and `running` | any absent, or state ≠ `running`; any `seen_container=` not declared | `podman` missing / probe non-zero |
+| Containers | `container=` vs `containers:` | every declared container present and `running` — a `oneshot` container instead absent or `exited` (it runs only inside its job) | any absent, or state ≠ `running` (a `oneshot` container: `running` outside a job run is fine, any other state but `exited`/absent is not); any `seen_container=` not declared | `podman` missing / probe non-zero |
 | Image pin | `digest=` vs `spec.containers.*.image` | digest resolves and tag matches the pin | tag on the running container ≠ the pinned tag | digest `unknown` (image pruned or offline) |
-| Health | `container=` health field | `healthy`, or `none` (image defines no healthcheck) | `unhealthy` while `status: active` | `starting` |
-| Units | `unit=` | `enabled` + `active` | `disabled`, `inactive`, `failed`, or `NRestarts` above the crashloop threshold (default 5) | unit not found |
+| Health | `container=` health field | `healthy`, or `none` (neither the image nor `spec` defines a healthcheck) | `unhealthy` while `status: active`; `none` while the container's `spec` declares a `healthcheck` | `starting` |
+| Units | `unit=` | `enabled` or `generated` (a quadlet's unit), + `active` (a `oneshot` container's unit: `inactive`, and never `failed` — its job reports its runs) | `disabled`, `inactive`, `failed`, or `NRestarts` above the crashloop threshold (default 5) | unit not found |
 | Quadlets | rendered vs `quadlet=` | byte-identical after trailing-whitespace normalisation | see above | render failed, or quadlet dir unreadable |
 | Networks | `network=` vs `networks:` | every declared network present | any absent, or an undeclared `<slug>-*` network exists | `podman network ls` non-zero |
-| Volumes | `volume=` vs `spec.volumes.*` | dir exists, owner and mode match (defaults `doccap:doccap`, `0750`) | absent, or owner/mode differ | `stat` denied |
-| Ports | `port=` + `firewall=` vs `ports:` | every declared port listening, and — where a rule can be attributed at all — a `firewall=` line matching it | declared but not listening; a tagged rule with no matching `ports:` entry; `firewall=none-tagged` while ports are declared | `firewall=untaggable` (rules on this node cannot carry the slug: `tool: none` or `tag_mechanism: none`); `firewall=no-probe` (tool known, no verified read-back in § "Observed dialects"); `firewall=unreadable` (`sudo -n` denied, or the read-back command failed); or `ss` non-zero |
+| Volumes | `volume=` vs `spec.volumes.*`; `volns=` instead for an `owner: container:<uid>:<gid>` volume | dir exists, owner and mode match (defaults `doccap:doccap`, `0750`; a container-form owner as `<uid>:<gid>` on the `volns=` line) | absent, or owner/mode differ | `stat` denied; `volns=…|unknown` for a container-form owner |
+| Ports | `port=` + `firewall=` vs `ports:`, each container's published host ports, and each host-network container's `listens:` | every single port in `ports:`, every published host port (on its bind address, if one is given) and every `listens:` single port listening — a range is never listening-checked; and — where a rule can be attributed at all — a `firewall=` line matching each `ports:` entry, a range by one rule covering it in the tool's range form | a single port declared in any of the three places but not listening; a published port listening on an address other than the declared bind address (a loopback publish answering on every address); a tagged rule with no matching `ports:` entry; `firewall=none-tagged` while ports are declared | `firewall=untaggable` (rules on this node cannot carry the slug: `tool: none` or `tag_mechanism: none`); `firewall=no-probe` (tool known, no verified read-back in § "Observed dialects"); `firewall=unreadable` (`sudo -n` denied, or the read-back command failed); or `ss` non-zero |
+| Files | `filehash=` vs the sha256 list of `<slug>.files/<vol>/` in the fork at `HEAD`, and at `last_applied_commit` | node list equals `HEAD`'s | **doc-ahead**: node equals `last_applied_commit`'s but not `HEAD`'s (git changed, never synced — `/modify-use-case`); **node-ahead**: node differs from `last_applied_commit`'s (edited on the node — recovery `lost on rebuild`); `absent` or `empty` while git holds files | `unreadable` |
+| Jobs | `jobfile=` vs the rendered script and units (compared as quadlets are, § "The quadlet comparison"); `jobtimer=`, `joblast=` vs `spec.jobs` and each `schedule` | every job's files byte-identical, timer `enabled` + `active`, and its last line `rc=0` no older than its interval + 1 h | a file missing, extra or different; a timer not enabled or not active; last line `rc≠0` (failing job); last run older than its interval + 1 h (missed runs) | `joblast=…|never` on a job applied less than one interval ago |
+| Shared mounts | `shared=` vs every `from:` mount | every owner directory `present` | any `absent` (the owner was removed or never applied) | — |
 | Secrets | `envfile=` + `envkey=` vs `<slug>.secrets.yaml` | file present, `0600 doccap:doccap`, key names match `keys[].name` | `has_secrets: true` but file absent; wrong mode/owner; key names present that the manifest does not declare | env file unreadable |
-| Status coherence | derived | `active` with every declared container running, **and** — only if the doc declares a migration unit — that unit **not live** in the sense defined below (both fields known, neither reporting liveness); `planned` with nothing live | `active` with nothing running; `active` while a declared migration unit is still **live** (cut-over incomplete — container and host service both serving); `planned` with a running `container=` or a live migration unit (the `/onboard-node` hand-off) | containers `UNKNOWN`, or a declared migration unit **indeterminate** (either field `unknown` — systemctl unreachable or absent) |
-| Static invariants | doc only | `containers`/`networks`/`volumes` ⇔ `spec.*` keys; every image pinned | list/`spec` mismatch, or a `:latest` tag | — |
+| Status coherence | derived | `active` with every declared container running (every non-`oneshot` one), **and** — only if the doc declares a migration unit — that unit **not live** in the sense defined below (both fields known, neither reporting liveness); `planned` with nothing live | `active` with nothing running; `active` while a declared migration unit is still **live** (cut-over incomplete — container and host service both serving); `planned` with a running `container=` or a live migration unit (the `/onboard-node` hand-off) | containers `UNKNOWN`, or a declared migration unit **indeterminate** (either field `unknown` — systemctl unreachable or absent) |
+| Static invariants | doc only | `containers`/`networks`/`volumes` ⇔ `spec.*` keys; every image pinned; every container passes the validation rules in `podman-quadlets` § "Render from spec" | list/`spec` mismatch, a `:latest` tag, or a failed validation rule (named with its container and key) | — |
 
 Static invariants need no node access and are checked even when every probe
 fails.
 
 ### Status coherence — the two conditions its cells turn on
 
-**A declared migration unit falls into exactly one of three classes.** Read the
-`migration_unit=<unit>|<enabled>|<active>` line and apply these rules **in this
-order** — the precedence is what keeps the classes disjoint:
+**Each declared migration unit falls into exactly one of three classes.**
+There is one `migration_unit=<unit>|<enabled>|<active>` line per `units:`
+entry. Classify each line by these rules, **in this order** (the precedence
+is what keeps the classes disjoint). The document's verdict is then the
+strongest class among its units: live beats indeterminate, which beats not
+live.
 
-1. **live** — the enabled field reports `enabled`, **or** the active field
-   reports `active`. Positive evidence outranks a missing reading.
+1. **live** — the enabled field reports `enabled` or `generated` (a quadlet's
+   unit, which its `[Install]` section starts at boot), **or** the active
+   field reports `active`. Positive evidence outranks a missing reading.
 2. **indeterminate** — not live by (1), and **either** field reports `unknown`.
    The probe emits `unknown` when `systemctl` returned nothing, so a broken or
    absent unit manager lands here and must never be read as a finished
@@ -216,6 +281,7 @@ probe can emit:
 |---|---|---|---|
 | `enabled` | `active` | live | `DRIFT` |
 | `enabled` | `inactive` | live | `DRIFT` |
+| `generated` | `inactive` | live | `DRIFT` |
 | `disabled` | `active` | live | `DRIFT` |
 | `disabled` | `inactive` | not live | `OK` |
 | `not-found` | `inactive` | not live | `OK` |
@@ -229,6 +295,14 @@ and positive liveness always beats `UNKNOWN`.
 A document with no `## Migration` section emits no `migration_unit=` line and
 declares no unit — the conjunct drops out of every cell rather than failing, so
 an ordinary use-case is judged on its containers alone.
+
+**Legacy containers of another owner count as live units.** A
+`legacy_container=<name>|running` line (any state but `absent`, `exited`,
+`stopped` or `created`) is **live**. `unknown` is **indeterminate**. Absent or
+stopped is **not live**. An `active` document with a live legacy container is
+a cut-over that was rolled back, or never finished, while the new containers
+also run: `DRIFT`, remedy the rollback recipe or a re-run of the cut-over,
+never both.
 
 **The remedy depends on whether the document can be applied at all.** For a
 `planned` document with a non-empty `spec.containers`, the fix is
@@ -271,9 +345,17 @@ done
 ```
 
 `podman diff` lists paths `A`dded, `C`hanged, or `D`eleted in the container's
-writable layer relative to its image. Filter out every path that falls under a
+writable layer relative to its image. Filter out every path at or under a
 declared mount target (`spec.containers.<c>.mounts[].target`) — those are
-persisted in a bind mount and are Tier 1's business.
+persisted in a bind mount and are Tier 1's business. Then drop the lines that
+say nothing a rebuild would lose:
+
+- a `C` line whose path is a parent of another line's path, or of a declared
+  mount target. A changed directory only says that something beneath it
+  changed, and that change has its own line or is a mount;
+- a `C /etc` with no line beneath it. Every running container reports it,
+  because podman places its `hosts`, `hostname` and `resolv.conf` mount
+  points there.
 
 **What remains is configuration that a rebuild destroys.** This is the single
 highest-value finding in the whole skill, it is universal, and it needs no
@@ -285,6 +367,8 @@ known mutation" from "something new happened".
 
 Note the failure mode: a stopped container cannot be diffed. Report `UNKNOWN`
 rather than "clean" — a stopped container is never evidence of no mutation.
+A `oneshot` container is the exception and is skipped: its job removes it
+after every run, so nothing in its writable layer outlives the run.
 
 ### Declared config surfaces (needs the manifest)
 
@@ -378,6 +462,9 @@ entirely under `--report-only`.
 - **`[p] promote`** — offered **only** when the doc catching up makes doc and
   node consistent with no further action:
   - an undeclared firewall-allowed port → append to `ports:`
+  - a files-volume file edited on the node (`node-ahead`) → copy the node's
+    file into `<slug>.files/<vol>/` at the same relative path; the next
+    `/modify-use-case` run then has nothing to sync
   - an undeclared env key → append to `<slug>.secrets.yaml:keys[]` with
     `purpose: "adopted by audit; verify"` and `rotates: never`
   - an undeclared `<slug>-*` container or network → reverse-map into `spec:`

@@ -217,6 +217,7 @@ and `.agents/skills`, and you invoke them as `/<name>`.
 |---|---|---|---|
 | Claude Code | `CLAUDE.md` → `AGENTS.md` | `.claude/skills` | Tested: every lab scenario |
 | Mistral Vibe | `VIBE.md` → `AGENTS.md` | `.vibe/skills` | Tested: lab `whoami` |
+| pi on OpenRouter | `AGENTS.md` | `.agents/skills` | Lab runner only (`--adapter pi`). Tested: lab `whoami`, `web-db` (free: Nemotron 3 Ultra; paid: DeepSeek V4.1 Flash, Claude Haiku 5.5) |
 | Other agents that read `AGENTS.md` | `AGENTS.md` | `.agents/skills` | Untested — reports welcome |
 
 **Cloning the fork is the install.** The skills are also listed in skill

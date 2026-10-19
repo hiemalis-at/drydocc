@@ -464,7 +464,10 @@ Three stores grow, and they grow for different reasons:
    to the most recent entries, never by deleting the file: the file's existence
    is what tells `/backup-use-case` where to resume its journal catch-up, and
    lines older than the manifest's `last_backup` have already been journaled
-   and are safe to drop.
+   and are safe to drop. A use-case job's run log,
+   `/var/lib/drydocc/jobs/<slug>-<name>.log` (`podman-quadlets` § "Jobs"), is
+   rotated the same way: truncated to its most recent lines, never deleted.
+   Its last line is what the audit and the overdue check read.
 
 3. **Container writable layers**, which is a different problem wearing the same
    clothes:

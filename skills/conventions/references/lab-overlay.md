@@ -95,7 +95,12 @@ question. Ids defined so far:
 | `apply-use-case.confirm-rebuild` | apply-use-case · 3c | `yes` \| `no` |
 | `apply-use-case.confirm-adoption` | apply-use-case · 5 | `yes` \| `no` |
 | `apply-use-case.confirm-render` | apply-use-case · 7 | `yes` \| `no` — the rendered quadlets (and any port-floor change) are accepted |
-
+| `modify-use-case.continue-over-ssh` | modify-use-case · 1b | `yes` \| `no` |
+| `modify-use-case.confirm-diff` | modify-use-case · 4 | `yes` \| `no` |
+| `modify-use-case.confirm-render` | modify-use-case · 7 | `yes` \| `no` |
+| `remove-use-case.continue-over-ssh` | remove-use-case · 1 | `yes` \| `no` |
+| `remove-use-case.confirm` | remove-use-case · 2 | `yes` \| `no` |
+| `audit-use-case.capture-back` | audit-use-case · 9 | a menu key per finding, e.g. `n` for every finding, or `i writable_layer/web, n the rest` |
 | `backup.target-scope` | backup targets walkthrough · 1 | `fork` \| `node` |
 | `backup.target-fields` | backup targets walkthrough · 2 | the target's type and fields, e.g. `rsync: name vault, host vault, port 42022, user doccap, root /srv/backups` |
 | `backup.authorize-target-key` | backup targets walkthrough · 4, backup-use-case · 3.3 | an admin action (§ "Admin actions") |
@@ -198,6 +203,26 @@ authentication and no git host behind it. Hand the URL to a node unchanged
 is no deploy key to register, so the node's own key is still generated, but
 registration is answered by `bootstrap.fork-key-registered: lab-remote`.
 Read and write verification still run and must pass.
+
+## Checks from off the node
+
+Some verifications must be made from off the node: a published port answers,
+a closed one does not. A lab node's ports are not reachable from the client;
+the lab forwards only SSH. When the run has another node, make the off-node
+check from that peer over the lab network. When it has none, run the on-node
+half of the check and name the off-node half in the journal entry as *not
+verifiable in a lab run*. It does not lower the step's outcome, which is what
+the checks that could run say. Never skip such a check silently.
+
+## The hypervisor is out of reach
+
+A lab node is reached the way a real one is: over SSH, as the skills say. The
+host that runs its VM is not part of the infrastructure under test, so the
+virtualization and disk-image tools are unavailable in a lab run. A node that
+stops answering SSH — a lockout, a firewall rule, a ban — is a finding.
+Record it as a real admin would see it (the journal entry's `outcome:
+failed`, with what was last changed) and end the step. Never repair the node
+from the host; a real box has no host to repair it from.
 
 ## Secrets in a lab run
 

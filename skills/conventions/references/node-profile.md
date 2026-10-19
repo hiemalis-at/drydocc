@@ -85,17 +85,17 @@ secrets:
     - name: DOCCAP_TS_KEY
       purpose: tailscale auth key for tailnet join
       phase: bootstrap
-      keepass_entry: "drydocc/tailscale"
+      keepass_entry: "drydocc://tailscale"
       optional: false
     - name: DOCCAP_NTFY_ADMIN_TOPIC
       purpose: ntfy topic the admin's phone subscribes to (node runtime secret)
       phase: runtime
-      keepass_entry: "drydocc/ntfy"
+      keepass_entry: "drydocc://ntfy"
       optional: true
     - name: DOCCAP_NTFY_AGENT_TOPIC
       purpose: ntfy topic agents poll (node runtime secret)
       phase: runtime
-      keepass_entry: "drydocc/ntfy"
+      keepass_entry: "drydocc://ntfy"
       optional: true
 created: 2026-05-18
 last_bootstrapped: null
@@ -109,7 +109,10 @@ Enums and defaults are in the schema block above; this section covers only what
 a field's name and enum do not convey.
 
 - **`name`** — Must equal the directory name (kebab-case). The primary identifier, used by
-  `/bootstrap-node`, `/onboard-node`, and journal scopes.
+  `/bootstrap-node`, `/onboard-node`, and journal scopes. It is also the
+  node-name of the node's KeePassXC lookup URLs, so it must never equal a
+  global credential's name (`tailscale`, `ntfy`, …) — `references/secrets.md`
+  § "URL convention".
 - **`distro`** — What the box reports about itself (`/etc/os-release` `ID=`).
   It **records and corroborates; it never selects behaviour.** Every dialect
   decision turns on a `system_facts` key instead. A skill that branches on
@@ -281,7 +284,7 @@ a field's name and enum do not convey.
   - **`name`** — The env-var name resolved env-var-first per `secrets` (e.g. `DOCCAP_TS_KEY`).
   - **`purpose`** — One-line description.
   - **`phase`** — Free-form note on when the var is needed (e.g. `bootstrap`). `runtime` marks a node runtime secret — one that unattended jobs on the node need, installed under `/etc/drydocc/secrets/_<purpose>.env` rather than held only for a session (see `references/secrets.md` § "Node runtime secrets").
-  - **`keepass_entry`** — Metadata for the `@max-win-at/keepassxc-secrets` skill (`drydocc/…`). The agent derives the lookup URL: `drydocc/<rest>` → `https://drydo.cc.local/<rest>`. Used only when the value isn't already in the environment.
+  - **`keepass_entry`** — The KeePassXC lookup URL (`drydocc://…`) the `@max-win-at/keepassxc-secrets` skill fetches from, per `references/secrets.md` § "URL convention". Used only when the value isn't already in the environment.
   - **`optional`** — Boolean; `false` blocks the run when unresolved, `true` is skipped (e.g. `DOCCAP_NTFY_ADMIN_TOPIC` on a node without notifications). Fork access is not listed here: a node pushes with its own deploy key, generated on the node, not with a secret the admin supplies.
 - **`created`** — ISO date (YYYY-MM-DD) when `nodes/<node>/` was first scaffolded by `/bootstrap-node` (Phase 0).
 - **`last_bootstrapped`** — ISO datetime (YYYY-MM-DDTHH:MM:SSZ, UTC) when the node first reached the `drydocc` baseline. Set by `/bootstrap-node` on its first successful run, **or** by `/onboard-node` iff every `hardening.*` field reached baseline AND cut-over verification passed during that run. `null` otherwise. Allows the agent to detect newly-bootstrapped nodes and to refuse `/onboard-node` on a node that already crossed the baseline. Re-running `/bootstrap-node` on a node where this is set triggers an interactive audit-&-repair confirmation.
@@ -308,7 +311,7 @@ follows:
 
 Everything this table does not name is **portable** and carries over unchanged
 — `doccap_user`, `ssh_fallback_port`, `roles`, `secrets.required_env` (a
-node-scoped `keepass_entry`, `drydocc/<node>/…`, follows the new name), and any
+node-scoped `keepass_entry`, `drydocc://<node>/…`, follows the new name), and any
 field added later unless it is added here. A new field that describes the
 machine must be added to this table in the same change.
 

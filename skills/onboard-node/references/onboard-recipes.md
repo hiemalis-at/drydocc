@@ -308,11 +308,29 @@ tailscale status --json 2>/dev/null \
   2>/dev/null \
   || echo tailscale=absent
 
-# Containers
+# Containers — the connecting user's own (rootful when that user is root),
+# with each one's managing unit, if any
+echo "podman_owner=$(id -un)"
 command -v podman >/dev/null \
-  && podman ps --all --format '{{.Names}}|{{.Image}}|{{.Ports}}|{{.Status}}' \
+  && podman ps --all --format '{{.Names}}|{{.Image}}|{{.Ports}}|{{.Status}}|{{.Labels.PODMAN_SYSTEMD_UNIT}}' \
        | sed 's/^/podman_container=/' \
   || echo podman=absent
+
+# ...and every other lingering user's rootless containers and user timers.
+# A rootless user's containers live in that user's storage and are invisible
+# to anyone else's `podman ps`; a lingering user is one whose services run
+# with nobody logged in, which is what a box set up by hand typically uses.
+for u in $(ls /var/lib/systemd/linger 2>/dev/null); do
+  [ "$u" = "$(id -un)" ] && continue
+  uid=$(id -u "$u" 2>/dev/null) || continue
+  if [ ! -d "/run/user/$uid" ]; then echo "podman_user=$u|no-runtime-dir"; continue; fi
+  echo "podman_user=$u|ok"
+  sudo -n -u "$u" XDG_RUNTIME_DIR="/run/user/$uid" \
+    podman ps --all --format '{{.Names}}|{{.Image}}|{{.Ports}}|{{.Status}}|{{.Labels.PODMAN_SYSTEMD_UNIT}}' 2>/dev/null \
+    | sed "s/^/podman_container_user=$u|/"
+  sudo -n systemctl --user -M "$u@" list-timers --all --no-legend --no-pager 2>/dev/null \
+    | awk -v u="$u" '{for (i=1;i<=NF;i++) if ($i ~ /\.timer$/) {print "user_timer=" u "|" $i; break}}'
+done
 command -v docker >/dev/null \
   && sudo -n docker ps --all --format '{{.Names}}|{{.Image}}|{{.Ports}}|{{.Status}}' \
        | sed 's/^/docker_container=/' \
@@ -346,9 +364,18 @@ systemctl list-unit-files --state=enabled --no-legend --no-pager \
 ```
 
 Each line is `key=value`; the agent parses on the first `=`. Multi-value
-keys (`podman_container=`, `port=`, `systemd_unit=`) are accumulated.
+keys (`podman_container=`, `podman_container_user=`, `podman_user=`,
+`user_timer=`, `port=`, `systemd_unit=`) are accumulated. A container's
+**owner** is `podman_owner` for a `podman_container=` line and the user named
+in a `podman_container_user=` line. Every later step that touches the
+container (the inspect below, the scaffolded Migration section) runs as that
+owner. A `podman_user=<u>|no-runtime-dir` line means that user's containers
+could not be listed: report it in the journal, never as "no containers".
 
-Per-container detail follows once the container list is known:
+Per-container detail follows once the container list is known, run as each
+container's owner. For another user's container, prefix the `podman inspect`
+below with `sudo -n -u <owner> XDG_RUNTIME_DIR=/run/user/<uid>`, exactly as
+the inventory did:
 
 ```bash
 for name in $CONTAINER_NAMES; do
@@ -359,10 +386,17 @@ for name in $CONTAINER_NAMES; do
         "image_id": d["Image"],
         "env_names":[e.split("=",1)[0] for e in d["Config"]["Env"]],
         "mounts":   [{"type":m["Type"],"source":m["Source"],"target":m["Destination"],"name":m.get("Name","")} for m in d["Mounts"]],
-        "networks": list(d["NetworkSettings"]["Networks"].keys()),
+        "network_mode": d["HostConfig"].get("NetworkMode", ""),
+        "networks": list((d["NetworkSettings"].get("Networks") or {}).keys()),
+        "aliases":  {k: (v or {}).get("Aliases") or [] for k, v in (d["NetworkSettings"].get("Networks") or {}).items()},
         "ports":    d["HostConfig"]["PortBindings"] or {},
         "restart":  d["HostConfig"]["RestartPolicy"]["Name"],
         "cmd":      d["Config"]["Cmd"] or [],
+        "entrypoint": d["Config"].get("Entrypoint") or [],
+        "user":     d["Config"].get("User", ""),
+        "hostname": d["Config"].get("Hostname", ""),
+        "cap_add":  d["HostConfig"].get("CapAdd") or [],
+        "healthcheck": d["Config"].get("Healthcheck") or {},
         "labels":   d["Config"]["Labels"] or {},
       }))'
 done
@@ -609,17 +643,28 @@ Special cases:
 
 ## Service discovery rules
 
-Cluster discovered containers into use-case groups by, in order:
+Cluster discovered containers into use-case groups by, in order. Clustering
+never crosses owners: containers of two different users never share a
+use-case. Before any rule, strip the `systemd-` prefix podman gives a
+quadlet's container by default from the name of every container whose unit
+label is set. `systemd-wiki-db` clusters, and is keyed, as
+`wiki-db`. Otherwise every quadlet container on a box would share one
+prefix and collapse into a single use-case.
 
 1. **Compose project label.** Containers sharing
    `com.docker.compose.project` or `io.podman.compose.project` go into
    one use-case named after the project (kebab-cased). Most
    docker-compose / podman-compose stacks land here cleanly.
-2. **Shared name prefix.** Container names sharing a leading prefix of
+2. **Shared non-default network.** Containers attached to the same named
+   network (not the engine's default network) go into one use-case named
+   after that network. This is how hand-written quadlet stacks are usually
+   grouped, and it keeps a stack together even when its names share no
+   prefix (an MCP server on an application's network).
+3. **Shared name prefix.** Container names sharing a leading prefix of
    ≥ 3 chars terminated by `-` group together (e.g., `nextcloud-app`,
    `nextcloud-db`, `nextcloud-cron` → `nextcloud`). The 3-char minimum
    avoids spurious grouping.
-3. **Singleton.** Standalone containers with no shared prefix get their
+4. **Singleton.** Standalone containers with no shared prefix get their
    own use-case named after the container.
 
 Host-native services — systemd units that map to no container — are **not**
@@ -672,11 +717,19 @@ the full target schema. The reverse mapping:
 | `spec` field   | Inspect source                                                                                   | Reverse rule                                                                                                                                                                                            |
 | -------------- | ------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `image`        | `.ImageName` + `podman image inspect <id> --format '{{json .RepoDigests}}'`                       | **Pinned tag REQUIRED.** If the running tag is unpinned (`:latest`, no tag, or a moving tag), the agent prompts the admin: pick the `RepoDigest` form OR a semantic tag the admin pastes. |
-| `network`      | `.NetworkSettings.Networks` keys                                                                 | If exactly one network: rename to `<slug>-<existing>` (or `<slug>-net` for default `bridge`). Multiple networks: warn, propose `<slug>-net` as a single merged network — admin approves cluster-level. |
+| `network` / `networks` | `.HostConfig.NetworkMode`, `.NetworkSettings.Networks` keys                              | `NetworkMode` `host` → `network: host`, and derive `listens` (below). Otherwise, no named network (the engine's default network — rootless podman reports `NetworkMode` as its user-mode networking helper, e.g. `pasta`, with an empty `Networks` map; a rootful engine reports `bridge`) → `<slug>-net`; exactly one named network → `<slug>-<existing>`. Several networks: keep them all as `networks: [<slug>-<a>, <slug>-<b>]` — never merge them, a container on two networks usually needs both (an internal one and one with outbound access). |
+| `aliases`      | `.NetworkSettings.Networks.*.Aliases`                                                            | Every alias that is neither the container's name nor its short id → `aliases`. The live peers resolve these names today; dropping them breaks them at cut-over. |
+| `listens`      | Phase 3 `ss` lines whose process is the container's (host network only)                          | One `<port>/<proto>` per listening socket. Only for `network: host`.                                                                                                                                |
+| `cap_add`      | `.HostConfig.CapAdd`                                                                             | Bare upper-case names (`CAP_MKNOD` → `MKNOD`). Omit when empty.                                                                                                                                       |
+| `hostname`     | `.Config.Hostname`                                                                               | Only when it differs from the container's short id (podman's default).                                                                                                                                |
+| `user`         | `.Config.User`                                                                                   | Only when non-empty and different from the image's own `User` (`podman image inspect <id> --format '{{.Config.User}}'`).                                                                              |
+| `entrypoint`   | `.Config.Entrypoint`                                                                             | Only when it differs from the image's own entrypoint; space-joined. The raw array is journaled.                                                                                                       |
+| `healthcheck`  | `.Config.Healthcheck`                                                                            | Only when it differs from the image's own healthcheck: `cmd` from `Test` (drop the leading `CMD-SHELL`/`CMD`), durations from the nanosecond fields as `<n>s`, `retries`, `start_period`.             |
+| `start_timeout` | not derivable from `podman inspect`                                                             | Read `TimeoutStartSec=` from the unit that runs the container, if one does; otherwise omit.                                                                                                           |
 | `env`          | `.Config.Env` filtered: names NOT matching the secret regex                                       | Preserve names + values. Skipped names go to `env_from`.                                                                                                                                              |
 | `env_from`     | Set to `/etc/drydocc/secrets/<slug>.env` iff any env name matches `^[A-Z0-9_]*(_KEY\|_TOKEN\|_SECRET\|_PASS[A-Z0-9_]*\|_PASSWORD)$` | Emit a sibling `<slug>.secrets.yaml` listing matching names with `purpose: "adopted from existing container; verify"` and `rotates: never`. **Values are never recorded.** |
 | `mounts`       | `.Mounts[*]`                                                                                     | All entries become bind mounts under `/var/lib/drydocc/volumes/<slug>/<volume>/` — no podman-managed named volumes. For each, propose `volume: <derived-name>` (basename of target or label-driven), `target: <existing-target>`. **Data migration required**: record the current `.Source` so `/apply-use-case` can copy from it during the cut-over. Nothing is copied or moved at onboarding time, and the admin pre-migrates nothing. Journaled per mount. |
-| `ports`        | `.HostConfig.PortBindings`                                                                       | Translate to `<host>:<container>/<proto>`. Also propagate to top-level `ports:` summary list (validator-enforced equality).                                                                            |
+| `ports`        | `.HostConfig.PortBindings`                                                                       | Translate to `[<addr>:]<host>:<container>/<proto>`, keeping a non-empty `HostIp` as the bind address. Propagate to the top-level `ports:` firewall list only bindings on every address (empty `HostIp`, `0.0.0.0`, `::`); a loopback binding is never listed there. For a host-network container, propose the top-level entries from `listens` and let the admin trim them at the accept menu: only the admin knows which of them must be reachable from outside. |
 | `depends_on`   | not derivable                                                                                    | Leave `[]`; journal "depends_on unknown — admin should populate before apply."                                                                                                                        |
 | `restart`      | `.HostConfig.RestartPolicy.Name`                                                                 | Map `always` / `unless-stopped` → `always`; `on-failure` → `on-failure`; `no` / empty → `on-failure` (`drydocc` default).                                                                              |
 | `exec`         | `.Config.Cmd`                                                                                    | Omit if matches the image's default; otherwise emit as a space-joined string. The raw array is journaled for traceability.                                                                            |
@@ -685,7 +738,11 @@ For cluster-level `spec.networks.<name>` and `spec.volumes.<name>`:
 emit one entry per referenced name (the validator enforces that the
 top-level `networks:`/`volumes:` lists exactly equal the keys under
 `spec.*`). Networks get `internal: false` unless the discovered network
-has no IPv4 gateway. Volumes get default `mode: "0750"` and
+has no IPv4 gateway, and `subnet:` set to the network's IPv4 subnet
+(`podman network inspect <net> --format '{{range .Subnets}}{{.Subnet}} {{end}}'`)
+— services on an adopted box may rely on that address range (a trusted-proxy
+list, an allow-list), and a re-created network would otherwise get a fresh
+one. Volumes get default `mode: "0750"` and
 `owner: "doccap:doccap"`.
 
 **Top-level frontmatter** computed last:
@@ -750,9 +807,19 @@ different next steps, and boilerplate written for one is false on the others.
   from the `## Migration` section below, then run /apply-use-case <slug>. Until
   then the unit keeps running, untouched."`
 
-`## Migration` — emitted **only** for an adopted host-native service (Tier 1 or
-Tier 2 per `native-services.md`), never for a container cluster. Labelled-line
-schema per the `conventions` skill's `references/use-case-doc.md`.
+`## Migration` — emitted for an adopted host-native service (Tier 1 or Tier 2
+per `native-services.md`), and for a container cluster only when the
+defaults would not find its containers:
+- `owner: <user>` when the containers' owner is not `doccap`;
+- `containers: <spec-key>=<legacy-name>, …` when any spec key differs from
+  the live name (the stripped `systemd-` prefix always makes it differ).
+
+A user timer of the same owner (`user_timer=`) is never written into
+`units:` by onboarding: whether it belongs to the service, and must stop
+when the service moves, is the admin's call. List each one in the document's
+`## Runbook` as a candidate for `units:` (`<user>/<unit>`), and in the
+journal's `## Notes / drift detected`. Labelled-line schema per the
+`conventions` skill's `references/use-case-doc.md`.
 
 `## Quadlets` — the standard pointer from the `conventions` skill
 (`references/use-case-doc.md`), on every document kind.

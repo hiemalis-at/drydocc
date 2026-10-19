@@ -8,6 +8,173 @@ version is 0, a minor release may change conventions or the command surface.
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-10-19
+
+### Secrets
+
+- KeePassXC lookup URLs follow one standard,
+  `drydocc://<node-name>[/<use-case>][/<user-or-detail>]`, and `keepass_entry`
+  now holds that URL itself instead of a `drydocc/…` path the agent turned into
+  `https://drydo.cc.local/…`. Credentials every node shares sit in the node-name
+  position (`drydocc://tailscale`, `drydocc://ntfy`), so a node may not be named
+  after one. An entry of its own for one credential uses the detail segment:
+  an S3 backup target is `drydocc://<node>/backup/<target>`, a node's admin SSH
+  key `drydocc://<node>/ssh/doccap-at-<node>`. A use-case's variables still
+  share one entry, one custom field each. **To migrate a fork:** rewrite every
+  `keepass_entry` value from `drydocc/<rest>` to `drydocc://<rest>` (backup
+  targets from `drydocc/<node>/backup-<target>` to
+  `drydocc://<node>/backup/<target>`), and set each KeePassXC entry's URL field
+  to the same string. A value still in the old spelling is refused with the
+  rewrite named.
+
+### Use-cases
+
+- A container's `spec:` can now describe the services a real box runs, not
+  only the simple ones. All new keys are optional, and a document that uses
+  none of them renders exactly as before:
+  - `network: host` for a service that must share the node's network: a relay
+    binding a port range on demand, or a mail server or reverse proxy that
+    needs the real client address. Such a container publishes nothing and
+    declares what it binds in `listens:`.
+  - `networks: [a, b]` to join several of the use-case's networks, and
+    `aliases:` for extra DNS names on them.
+  - `cap_add:`, `hostname:`, `user:`, `entrypoint:`, `healthcheck:` and
+    `start_timeout:`.
+  - `subnet:` on a network, so an address range that other configuration
+    relies on survives a rebuild.
+  - A published port may name a bind address, `127.0.0.1:8080:80/tcp`, for a
+    backend that must only be reachable from the node itself.
+- The top-level `ports:` list is now explicitly the use-case's firewall list:
+  what must be reachable from outside, and nothing else. It may hold a range,
+  `49152-65535/udp`, opened as one tagged rule. A loopback-only publish is
+  never listed there.
+- `/apply-use-case`, `/modify-use-case` and `/audit-use-case` refuse or report
+  contradictory combinations (a host-network container with published ports,
+  `network` and `networks` both set), naming the container and the key.
+- `/onboard-node` now carries all of the above over from a running container:
+  host networking and what it listens on, every network a container is on
+  (no longer merged into one), aliases, added capabilities, hostname, user,
+  entrypoint, healthcheck, bind addresses and network subnets.
+- Configuration files can live in git next to the use-case. A volume that
+  declares `source: files` holds exactly the files under
+  `nodes/<node>/use-cases/<slug>.files/<volume>/`: synced on every apply,
+  re-synced by `/modify-use-case` (which restarts whatever mounts it),
+  compared file by file by `/audit-use-case`, and rebuilt from git rather
+  than restored from a backup. No templating, and never a secret in such a
+  file. A mount may set `subpath` to mount a single file of a volume.
+- One use-case can read another's files. A volume declared `shared: true`
+  can be mounted read-only by another use-case with `from: <owner>/<volume>`,
+  provided the owner is listed in its `depends_on` and is active.
+  `/remove-use-case` will not retire an owner that a consumer still mounts.
+- A use-case can declare its own scheduled jobs under `spec.jobs`. A job can
+  run a container that exists only for it (`oneshot: true`, never started at
+  boot), or `exec` a command in a running container. It can watch a volume,
+  or a shared volume it reads, and run follow-up actions (restart, exec) only
+  when that content changed. A certificate renewal reloads the proxy only
+  when a certificate actually changed, and a consumer of those certificates
+  restarts itself when they change.
+  - Jobs get the same treatment as the backup automation: a lock, a run log,
+    a failure notification and a missed-run alarm.
+  - `/apply-use-case` runs every job once while you watch.
+  - `/audit-use-case` reports failing and missed runs.
+  - `/remove-use-case` takes the jobs down with the use-case.
+- `/apply-use-case` can adopt containers that another user runs as rootless
+  quadlets, the way a box set up by hand before drydocc usually looks. The
+  use-case's `## Migration` section names them:
+  - `owner:` is the user whose podman runs them (`root` for rootful).
+  - `containers:` maps the document's container names to the names they
+    carry today (`app=systemd-wiki`).
+  - `units:` lists every host unit to switch off with the cut-over, a user's
+    own as `<user>/<unit>`. A single `unit:` still works.
+
+  The cut-over stops the old unit and moves its quadlet file aside as
+  `.preadopt`, so the old stack can still be started again. Data is copied
+  through both users' namespaces, so files keep the owner the containers
+  expect. **Changed for host services:** files copied from a host service's
+  `config:`/`data:` paths now take the volume's declared owner, instead of
+  keeping host ids that no rootless container can use.
+- A volume's `owner` may be written `container:<uid>:<gid>`, for a volume
+  whose root a container's own user must own (`www-data`, a database user).
+  The audit checks it as the containers see it.
+- `/onboard-node` now finds the containers and user timers of every
+  lingering user, not only the user it connects as. Quadlet containers are
+  grouped by the network they share rather than by their common `systemd-`
+  name prefix, and their documents get the `owner:` and `containers:` lines
+  they need.
+- `/modify-use-case` and `/remove-use-case` now mark their confirmations with
+  decision ids, so a lab scenario can answer them. So does `/audit-use-case`'s
+  capture-back menu: a scenario that expects drift can now run a full audit.
+- A `%` in a spec value, such as `date +%s` in a container's command, now
+  reaches the container as written. Before, systemd expanded it as a unit-file
+  specifier.
+- A volume that two containers of one use-case mount, a job's container
+  included, now gets the shared relabel on a node whose MAC framework
+  relabels mounts. With the private one, the container that started second
+  locked the other out. An existing use-case with such a volume shows as
+  quadlet drift in `/audit-use-case`; `/modify-use-case` renders it again.
+- `/audit-use-case` no longer reports drift on a container nobody touched.
+  Every container showed a changed `/etc`, which is where podman puts its own
+  `hosts`, `hostname` and `resolv.conf`, and every changed path also listed its
+  parent directories. It also accepts a quadlet's unit as `generated`, the
+  only state such a unit reports, and counts a legacy quadlet unit that is
+  still in place as live, since it starts at boot. A job's `oneshot`
+  container, removed after every run, is no longer reported as unknown.
+- After adopting another user's quadlet stack, the prune list also names that
+  user's network quadlets the adopted containers used. They stay in place
+  until you remove them, so a rollback can still start the old stack.
+
+### Hardening
+
+- `/bootstrap-node` no longer bans its own commissioning client when it
+  enables fail2ban. A jail reads the auth log back when it starts; the
+  lockdown's own check that root is refused logs up to three failures each
+  time, and two such checks were enough to ban the admin's address on the
+  spot. The client is now exempt while the jail starts, the exemption is
+  dropped once the jail is up, and a fresh connection must succeed before the
+  step counts as done. Found when a lab bootstrap locked itself out;
+  reproduced and verified on a lab node.
+
+### Lab
+
+- Lab runs no longer see each other. A run's fork is now a standalone clone
+  in the lab store instead of a worktree of your checkout, so an agent can no
+  longer read another run's branch — a model in the first qualification
+  copied an earlier model's work that way. Your repository gains no lab
+  branches; forks made before this are still cleaned up.
+- In a lab run, a check that must come from off the node (a published port
+  answers) is made from a peer node when the run has one, and otherwise
+  named in the journal as not verifiable in the lab instead of being skipped
+  silently or turning the apply into `partial`.
+- Agents in a lab run can no longer reach the hypervisor. `virsh`, the
+  disk-image tools and the libvirt connection are out of reach, so an agent
+  that loses a node cannot "repair" it from the host — a real box has no host.
+  A node that stops answering is recorded as a finding and ends the step.
+
+- The lab can run on free models: a new agent adapter, `pi`, drives pi
+  (pi.dev) on OpenRouter's free models — or on any cheap paid model there. Lab runs no longer have to cost money
+  per request. Free models get withdrawn and throttled, so it falls back
+  through a ranked list (`scripts/lab/agents/pi/models`) within the same
+  session. A shared daily cap or a bad key ends the step as an
+  infrastructure error, never as a test failure. Setup is in
+  `scripts/lab/agents/README.md` — including the privacy notice: free
+  providers log what the lab agent sees.
+- `lab.py qualify` measures which models can run drydocc: scenarios × models,
+  one pinned model per run, and a pass-rate matrix with requests and minutes.
+  An overloaded model is skipped, not fatal; it resumes after a daily cap. A
+  model stuck repeating one tool call is stopped and fails its step. Its
+  runs are independent: it starts only when no other lab run's work is
+  readable, and cleans up each run once recorded. First results: Nemotron 3
+  Ultra (free), DeepSeek V4.1 Flash and Claude Haiku 5.5 (about 4 cents a
+  scenario) pass `whoami` and `web-db`.
+- The lab now tells you your agent options. `lab.py agents` lists every
+  adapter: ready or not, paid or free, its model and qualification. `run`,
+  `up`, `verify-runbook` and `qualify` open with the agent in use, its cost,
+  and the alternatives. `/lab` asks which agent to use and recommends the
+  cheapest qualified one.
+- `DRYDOCC_LAB_ADAPTER` sets the default adapter, and `run --model` /
+  `DRYDOCC_LAB_MODEL` the model. Reports name the models a step used and its
+  request count.
+
 ## [0.3.0] - 2026-10-15
 
 ### Hardening
@@ -211,7 +378,8 @@ First public release.
 - Agent adapters for Claude Code and Mistral Vibe, behind one documented
   contract in `scripts/lab/agents/README.md`.
 
-[Unreleased]: https://github.com/hiemalis-at/drydocc/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/hiemalis-at/drydocc/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/hiemalis-at/drydocc/releases/tag/v0.4.0
 [0.3.0]: https://github.com/hiemalis-at/drydocc/releases/tag/v0.3.0
 [0.2.0]: https://github.com/hiemalis-at/drydocc/releases/tag/v0.2.0
 [0.1.0]: https://github.com/hiemalis-at/drydocc/releases/tag/v0.1.0
