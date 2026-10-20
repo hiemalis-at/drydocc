@@ -56,7 +56,7 @@ targets:
     bucket: drydocc-backups
     root: prod                     # bucket-relative prefix snapshots land under
     force_path_style: false        # some S3-compatible providers require true
-    keepass_entry: "drydocc://<node>/backup/cold-s3"
+    keepass_entry: "drydocc://cold-s3.backup.<node>"
     target_path: /etc/drydocc/secrets/backup-cold-s3.env
     keys:
       - name: S3_ACCESS_KEY_ID
@@ -120,7 +120,7 @@ Follows `references/secrets.md` exactly, with one difference: the manifest is
 S3 target shares one env file, because the credentials authenticate the
 *target*, not any one use-case's data.
 
-- `keepass_entry`: `drydocc://<node>/backup/<target-name>` (node-scoped —
+- `keepass_entry`: `drydocc://<target-name>.backup.<node>` (node-scoped —
   scoping credentials per node means a compromised node can delete at most
   its own node's snapshots, never another node's).
 - `target_path`: `/etc/drydocc/secrets/backup-<target-name>.env`, written the

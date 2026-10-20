@@ -8,6 +8,42 @@ version is 0, a minor release may change conventions or the command surface.
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-10-20
+
+### Secrets
+
+- **KeePassXC lookup URLs now name their entry in the host**, most specific
+  label first: `drydocc://nextcloud.vps-fra-01` for a use-case,
+  `drydocc://cold-s3.backup.vps-fra-01` for a backup target,
+  `drydocc://doccap-at-vps-fra-01.ssh.vps-fra-01` for a node's SSH key. Globals
+  stay `drydocc://tailscale` and `drydocc://ntfy`. KeePassXC matches a URL by
+  its host and ignores the path, so 0.4.0's `drydocc://<node>/<use-case>`
+  returned every entry of a node for every lookup, and the agent could read
+  another use-case's secret.
+- **Each entry's title is its URL without `drydocc://`,** and every lookup
+  selects by that title. That closes KeePassXC's fallback from a missing
+  entry to its parent. An entry created with `kpxc-agent set-login` gets that
+  title automatically.
+- **Multi-key values now sit in custom fields named `KPH: <NAME>`.**
+  KeePassXC hands custom fields to `kpxc-agent` only under that prefix, and
+  only with **Settings → Browser Integration → Advanced → "Return advanced
+  string fields"** enabled, which is now required. "Return only best-matching
+  credentials" is recommended.
+- **Requires the `keepassxc-secrets` skill with `kpxc-agent` 1.1.0 or later.**
+  It adds the title selection and custom-field reads. With an older one,
+  secrets come from the environment or a `.env` file.
+- A use-case may not be named `backup` or `ssh`.
+- **To migrate a fork from 0.4.0:**
+  - Rewrite every `keepass_entry`: `drydocc://<node>/<a>` becomes
+    `drydocc://<a>.<node>`, and `drydocc://<node>/<a>/<b>` becomes
+    `drydocc://<b>.<a>.<node>`.
+  - In KeePassXC, give each entry the same URL and a title without
+    `drydocc://`.
+  - Prefix every custom field with `KPH: `.
+  - Turn on the two settings.
+  
+  A value still in the path form is refused with its rewrite named.
+
 ## [0.4.0] - 2026-10-19
 
 ### Secrets
@@ -378,7 +414,8 @@ First public release.
 - Agent adapters for Claude Code and Mistral Vibe, behind one documented
   contract in `scripts/lab/agents/README.md`.
 
-[Unreleased]: https://github.com/hiemalis-at/drydocc/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/hiemalis-at/drydocc/compare/v0.4.1...HEAD
+[0.4.1]: https://github.com/hiemalis-at/drydocc/releases/tag/v0.4.1
 [0.4.0]: https://github.com/hiemalis-at/drydocc/releases/tag/v0.4.0
 [0.3.0]: https://github.com/hiemalis-at/drydocc/releases/tag/v0.3.0
 [0.2.0]: https://github.com/hiemalis-at/drydocc/releases/tag/v0.2.0

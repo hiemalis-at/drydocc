@@ -31,8 +31,11 @@ Run once, early, in any command that may need a secret. Non-fatal, and it
 **never installs anything** — adding a skill to the admin's agent is the
 admin's decision.
 
-1. Is the `@max-win-at/keepassxc-secrets` skill installed / available? → record
-   `keepass_skill: available` and stop.
+1. Is the `@max-win-at/keepassxc-secrets` skill installed / available, with a
+   `kpxc-agent` of 1.1.0 or later (`kpxc-agent --help` lists `--name` and
+   `string:NAME`)? → record `keepass_skill: available` and stop. An older
+   `kpxc-agent` cannot make an exact lookup or read a custom field: record
+   `keepass_skill: unavailable` and ask the admin to update the skill.
 2. Otherwise record `keepass_skill: unavailable`, tell the admin once how to
    install it, and carry on:
 
@@ -56,13 +59,16 @@ To resolve a secret with env-var NAME `<NAME>`:
    lookup URL:
 
    ```
-   drydocc://<node-name>[/<use-case>][/<user-or-detail>]
+   drydocc://{user-or-detail.}{use-case.}<node-name>
    ```
 
-   Invoke `@max-win-at/keepassxc-secrets` with that URL to fetch `<NAME>`.
-   For multi-key entries, read the field matching `<NAME>` (custom string field
-   on the KeePassXC entry). See `conventions` → `references/secrets.md` §
-   "KeePassXC entry setup" for the full URL convention.
+   Invoke `@max-win-at/keepassxc-secrets` with that URL to fetch `<NAME>`,
+   always passing `--name <title>`, the URL without `drydocc://`. KeePassXC
+   matches by host and can fall back to a parent entry, so a lookup without
+   `--name` may read another entry's secret. For multi-key entries, read
+   `--field string:<NAME>` (the entry's `KPH: <NAME>` custom field). See
+   `conventions` → `references/secrets.md` § "URL convention" for the grammar
+   and § "KeePassXC settings" for the two settings it relies on.
 
    **No `--json` for existence checks.** Never pass `--json` (or otherwise let
    the raw entry print unfiltered) when checking whether an entry exists or
@@ -82,8 +88,10 @@ To resolve a secret with env-var NAME `<NAME>`:
      open/unlocked** in KeePassXC (switching the active database is a
      manual step in the app).
    - Confirm the entry's **URL field** is set exactly to the
-     `keepass_entry` value (`drydocc://…`) — title and group path aren't
-     matched, only the URL field.
+     `keepass_entry` value (`drydocc://…`) and its **title** to the same
+     string without `drydocc://`; the group path is not matched.
+   - For a multi-key entry, confirm each field is named `KPH: <NAME>` and
+     that KeePassXC's "Return advanced string fields" setting is on.
 
    Retry step 2 once the user confirms; if they confirm the entry genuinely
    doesn't exist, proceed to the `.env` fallback.
@@ -255,7 +263,7 @@ file). They are listed in `node.yaml:secrets.required_env` with
 - `DOCCAP_NTFY_ADMIN_TOPIC`, `DOCCAP_NTFY_AGENT_TOPIC`, optional
   `DOCCAP_NTFY_TOKEN` — notification topics and token, installed by
   `/node-notify` as `_notify.env`. `keepass_entry`: `drydocc://ntfy`
-  (global), one custom field per
+  (global), one `KPH: <NAME>` custom field per
   variable. A topic name is a credential: on a public server anyone who knows
   it can read and publish. Generate each one — never let the admin pick a
   memorable name:
@@ -302,7 +310,8 @@ git data (invariant 3):
 - **`key_source: generated`** — `ssh-keygen` writes the private key to
   `~/.ssh/doccap-at-<slug>` (0600) on the **admin laptop**. The admin then
   stores it in a KeePass entry with URL
-  `drydocc://<slug>/ssh/doccap-at-<slug>` (attachment or private-key field) so it survives laptop loss — a manual admin
+  `drydocc://doccap-at-<slug>.ssh.<slug>`, titled `doccap-at-<slug>.ssh.<slug>`
+  (attachment or private-key field) so it survives laptop loss — a manual admin
   step, not an agent action.
 - **`key_source: keepass-agent`** — the admin already holds the desired key in a
   KeePassXC-backed `ssh-agent`; nothing is written to `~/.ssh`. The agent only

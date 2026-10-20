@@ -2338,9 +2338,12 @@ def emit_yaml(obj, indent: int = 0) -> str:
 
 
 def rescope_entry(entry: str, old: str, target: str) -> str:
-    """drydocc://<old>[/…] → drydocc://<target>[/…]; global entries stay."""
-    if entry == f"drydocc://{old}" or entry.startswith(f"drydocc://{old}/"):
-        return f"drydocc://{target}" + entry[len(f"drydocc://{old}"):]
+    """drydocc://[….]<old> → drydocc://[….]<target>; global entries stay. The node is
+    the last host label, so only a whole label matches."""
+    if entry == f"drydocc://{old}":
+        return f"drydocc://{target}"
+    if entry.startswith("drydocc://") and entry.endswith(f".{old}"):
+        return entry[: -len(old)] + target
     return entry
 
 

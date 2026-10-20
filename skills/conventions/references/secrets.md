@@ -10,7 +10,7 @@ The secrets manifest is a YAML file declaring which environment variables the us
 
 ```yaml
 use_case: nextcloud
-keepass_entry: "drydocc://vps-fra-01/nextcloud"
+keepass_entry: "drydocc://nextcloud.vps-fra-01"
 target_path: /etc/drydocc/secrets/nextcloud.env
 keys:
   - name: POSTGRES_PASSWORD
@@ -42,10 +42,12 @@ keys:
 
 ## KeePassXC entry setup
 
-The `@max-win-at/keepassxc-secrets` skill uses `kpxc-agent`, which queries
-KeePassXC via the browser-integration protocol. It matches entries by their
-**URL field**, not by title or group path. The admin must set the URL field on
-each entry so `kpxc-agent get-logins <url>` finds it.
+The `@max-win-at/keepassxc-secrets` skill uses `kpxc-agent` (1.1.0 or later),
+which queries KeePassXC via the browser-integration protocol. KeePassXC matches
+an entry by the **host** of its URL field and ignores the path. For a host with
+no entry of its own, it falls back to a parent domain's entries. Its reply
+carries each entry's title, so `kpxc-agent get-logins <url> --name <title>`
+keeps only the entry with exactly that title.
 
 `kpxc-agent` only ever queries whichever single KeePassXC database is
 currently open/unlocked — it cannot search across multiple vaults. A
@@ -56,22 +58,23 @@ how the agent handles that ambiguity with the user.
 
 ### URL convention
 
-Every lookup URL has this shape (`[]` mandatory, `{}` optional):
+Every lookup URL names its entry in the host, most specific label first
+(`[]` mandatory, `{}` optional):
 
 ```
-[drydocc://][node-name]{/use-case}{/user-or-detail}
+[drydocc://]{user-or-detail.}{use-case.}[node-name]
 ```
 
-`keepass_entry` holds the URL itself, and the entry's URL field is set to
-exactly the same string — there is no derivation step. The `drydocc://` scheme
-is never a real website, so a lookup can never match the admin's ordinary web
-credentials.
+`keepass_entry` holds the URL itself. The entry's URL field is set to exactly
+that string, and its **title** to the same string without `drydocc://` — the
+title is what makes a lookup exact. The `drydocc://` scheme is never a real
+website, so a lookup can never match the admin's ordinary web credentials.
 
-| Scope | Shape | Example |
+| Scope | Shape | Example (URL · title) |
 |-------|-------|---------|
-| Use-case (default) | `drydocc://<node>/<slug>` | `drydocc://vps-fra-01/nextcloud` |
-| Global | `drydocc://<service>` | `drydocc://tailscale`, `drydocc://ntfy` |
-| Detail | `drydocc://<node>/<scope>/<user-or-detail>` | `drydocc://vps-fra-01/backup/cold-s3`, `drydocc://vps-fra-01/ssh/doccap-at-vps-fra-01` |
+| Use-case (default) | `drydocc://<slug>.<node>` | `drydocc://nextcloud.vps-fra-01` · `nextcloud.vps-fra-01` |
+| Global | `drydocc://<service>` | `drydocc://tailscale` · `tailscale`, `drydocc://ntfy` · `ntfy` |
+| Detail | `drydocc://<user-or-detail>.<scope>.<node>` | `drydocc://cold-s3.backup.vps-fra-01`, `drydocc://doccap-at-vps-fra-01.ssh.vps-fra-01` |
 
 - **Node-name** is the node's slug (`node.yaml:name`). A **global** credential,
   shared by every node of the fork, takes the node-name position with the
@@ -80,24 +83,42 @@ credentials.
   scaffolded.
 - **Use-case** is the use-case slug, or a node-level scope that is not a
   use-case: `backup` (one entry per S3 backup target), `ssh` (the node's
-  admin-client key).
+  admin-client key). A use-case may therefore not be named `backup` or `ssh`.
 - **User-or-detail** names a separate entry only where one credential needs its
   own entry — a backup target, a key, a second account. The env-vars of one
   use-case still live together on **one** entry as custom fields (see "Storing
   values in entries"), never one entry per variable.
-- **Validation.** A `keepass_entry` that does not start with `drydocc://` is
-  the earlier spelling (`drydocc/<rest>`, looked up as
-  `https://drydo.cc.local/<rest>`). Refuse it and name the rewrite: the value
-  becomes `drydocc://<rest>`, and the admin sets the entry's URL field in
-  KeePassXC to that same string.
+- **Every label** is lowercase letters, digits and hyphens, as node and
+  use-case slugs already are.
+- **Lookup.** Always `kpxc-agent get-logins <keepass_entry> --name <title>`,
+  with the title derived as above. Without `--name`, a lookup for
+  `drydocc://cold-s3.backup.vps-fra-01` with no such entry would quietly
+  return a parent entry's secret.
+- **Validation.** Refuse a `keepass_entry` in an earlier spelling and name the
+  rewrite. One with a `/` after `drydocc://` is the path form:
+  `drydocc://<node>/<a>/<b>` becomes `drydocc://<b>.<a>.<node>`, and
+  `drydocc://<node>/<a>` becomes `drydocc://<a>.<node>`. One without
+  `drydocc://` (`drydocc/<rest>`) is older still: rewrite `<rest>` the same way.
+  The admin then sets the entry's URL field and title in KeePassXC to match.
 
 No type suffixes (`-pat`, `-key`, `-pwd`). The agent knows from context —
 the manifest's `keys[]`, `node.yaml:secrets.required_env`, or the invoking
 skill — what credential type to expect and which fields to read.
 
+### KeePassXC settings
+
+Under **Settings → Browser Integration → Advanced**:
+
+- **"Return advanced string fields which start with 'KPH: '"** — required. Without it,
+  KeePassXC never hands a custom field to `kpxc-agent`, and every multi-key
+  lookup misses.
+- **"Return only best-matching credentials"** — recommended. KeePassXC then
+  sends only the matching entry rather than every entry on related hosts, so a
+  lookup discloses less to the client.
+
 ### Organizing entries in KeePassXC
 
-Only the URL field is matched, so groups and titles are the admin's to
+Lookups match the URL field and the title, so groups are the admin's to
 choose. A hierarchy mirroring the lookup URLs keeps the vault readable:
 
 ```
@@ -105,11 +126,14 @@ drydocc/                          ← top-level group
 ├── tailscale                      ← global entry (URL: drydocc://tailscale)
 ├── ntfy                           ← global entry (URL: drydocc://ntfy)
 └── vps-fra-01/                    ← node group
-    ├── nextcloud                  ← entry (URL: drydocc://vps-fra-01/nextcloud)
-    ├── grafana                    ← entry (URL: drydocc://vps-fra-01/grafana)
+    ├── nextcloud.vps-fra-01       ← entry (URL: drydocc://nextcloud.vps-fra-01)
+    ├── grafana.vps-fra-01         ← entry (URL: drydocc://grafana.vps-fra-01)
     └── backup/
-        └── cold-s3                ← detail entry (URL: drydocc://vps-fra-01/backup/cold-s3)
+        └── cold-s3.backup.vps-fra-01  ← detail entry (URL: drydocc://cold-s3.backup.vps-fra-01)
 ```
+
+An entry created through `kpxc-agent set-login` already gets the right
+title: KeePassXC titles a new entry after its URL's host.
 
 ### Storing values in entries
 
@@ -119,17 +143,19 @@ field the context requires (typically `password`).
 
 **Multi-key use-cases** (e.g., nextcloud needs `POSTGRES_PASSWORD`,
 `NEXTCLOUD_ADMIN_PASSWORD`, `ETURNAL_SECRET`): store each value as a
-**custom string field** on the entry. The field name must match the env-var
-name from `keys[].name`. The agent reads each field by name.
+**custom string field** on the entry, named `KPH: <NAME>` with `<NAME>` the
+env-var name from `keys[].name`. KeePassXC returns custom fields to
+`kpxc-agent` only under that prefix. The agent reads each one with
+`--field string:<NAME>`.
 
 ```
-Entry: nextcloud
+Entry: nextcloud.vps-fra-01
   Group:    drydocc/vps-fra-01/
-  URL:      drydocc://vps-fra-01/nextcloud
+  URL:      drydocc://nextcloud.vps-fra-01
   Custom fields:
-    POSTGRES_PASSWORD        = ****
-    NEXTCLOUD_ADMIN_PASSWORD = ****
-    ETURNAL_SECRET           = ****
+    KPH: POSTGRES_PASSWORD        = ****
+    KPH: NEXTCLOUD_ADMIN_PASSWORD = ****
+    KPH: ETURNAL_SECRET           = ****
 ```
 
 ## Contract and Security
@@ -183,14 +209,14 @@ Every secret has a canonical env-var NAME (= `keys[].name`). The
 2. **keepass skill** — else, if `@max-win-at/keepassxc-secrets` is available
    (when it is not, the `secrets` skill § "Preflight: is the keepass skill
    available?" suggests how to install it — never installs it), it passes
-   `keepass_entry` — already the lookup URL — to `kpxc-agent get-logins` and
-   fetches the value. The agent never hand-writes
+   `keepass_entry` — already the lookup URL — to `kpxc-agent get-logins` with
+   `--name <title>` and fetches the value. The agent never hand-writes
    `keepassxc-cli`. Never pass `--json` (or otherwise print the raw entry)
    when only checking for existence — extract the needed field (e.g.
    `--field password`) into a variable instead, so the password never lands
    in tool output or shell history. If no entry matches, ask the user to
    confirm the correct vault is open in KeePassXC and that the entry's URL
-   field matches exactly, before falling through to step 3. Full detail:
+   field and title match exactly, before falling through to step 3. Full detail:
    `secrets` skill § "resolution protocol".
 3. **`.env` fallback** — else, the agent names the missing var(s), prints the
    hidden-paste command from `secrets` § ".env fallback — paste the value", and

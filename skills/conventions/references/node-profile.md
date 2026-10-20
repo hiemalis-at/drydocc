@@ -311,7 +311,7 @@ follows:
 
 Everything this table does not name is **portable** and carries over unchanged
 — `doccap_user`, `ssh_fallback_port`, `roles`, `secrets.required_env` (a
-node-scoped `keepass_entry`, `drydocc://<node>/…`, follows the new name), and any
+node-scoped `keepass_entry`, `drydocc://….<node>`, follows the new name), and any
 field added later unless it is added here. A new field that describes the
 machine must be added to this table in the same change.
 

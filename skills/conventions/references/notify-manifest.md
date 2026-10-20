@@ -155,7 +155,7 @@ Node layer only. `/node-notify` owns these.
 
 The variables named by `token_env` and `audiences.*.topic_env` resolve through
 the `secrets` skill like every other secret, from one global KeePass
-entry, `drydocc://ntfy`, with one custom field per variable. They are listed in
+entry, `drydocc://ntfy` (title `ntfy`), with one `KPH: <NAME>` custom field per variable. They are listed in
 each node's `node.yaml:secrets.required_env` with `optional: true`.
 
 Unlike session secrets, they must be present **on the node**, because

@@ -19,7 +19,7 @@ targets:
     bucket: drydocc-backups
     root: prod
     force_path_style: false
-    keepass_entry: "drydocc://example-vps/backup/cold-s3"
+    keepass_entry: "drydocc://cold-s3.backup.example-vps"
     target_path: /etc/drydocc/secrets/backup-cold-s3.env
     keys:
       - name: S3_ACCESS_KEY_ID

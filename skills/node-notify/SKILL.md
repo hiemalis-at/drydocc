@@ -91,8 +91,9 @@ exactly as it would without this one.
    - generate it per the `secrets` skill § "Node runtime secrets" — never
      accept a memorable name;
    - tell the admin exactly which KeePassXC entry and custom fields to create
-     (URL `drydocc://ntfy`, one field per
-     variable), or store it through the KeePassXC skill if it is available;
+     (URL `drydocc://ntfy`, title `ntfy`, one `KPH: <NAME>` field per
+     variable). Custom fields are created by hand: `kpxc-agent set-login`
+     writes only a username and password;
    - re-resolve before continuing.
 
    Apply refusal 4. Install `/etc/drydocc/secrets/_notify.env` per

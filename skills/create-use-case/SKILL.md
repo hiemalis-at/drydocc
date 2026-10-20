@@ -63,7 +63,9 @@ metadata:
 
 2. **Validate the slug.** Must match `^[a-z][a-z0-9-]{0,30}[a-z0-9]$` and
    must not already exist. Refuse if the file is present (suggest
-   `/modify-use-case` instead).
+   `/modify-use-case` instead). Refuse `backup` and `ssh`, the node-level
+   KeePass lookup scopes (`conventions` → `references/secrets.md` § "URL
+   convention").
 
 3. **Parse the description.** Pull out:
    - Likely container names (e.g., "nextcloud + postgres" → `nextcloud-app`,
