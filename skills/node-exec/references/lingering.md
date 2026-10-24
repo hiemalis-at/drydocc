@@ -22,14 +22,20 @@ ssh -i ~/.ssh/<key> -p <port> -o StrictHostKeyChecking=accept-new <user>@<host> 
   if tmux has-session -t "$S" 2>/dev/null; then
     echo "ATTACH: $S already running"
   else
-    tmux new -d -s "$S" "<cmd> >\"$L\" 2>&1; echo __DONE_\$?__ >> \"$L\""
+    : >"$L"
+    tmux new -d -s "$S" "{ <cmd>
+} >>\"$L\" 2>&1; echo __DONE_\$?__ >> \"$L\""
     echo "LAUNCHED: $S"
   fi
 '
 ```
 
-The job writes its own exit code as a `__DONE_<rc>__` sentinel on the log's last
-line. That sentinel — not "session gone" — is the source of truth for success,
+The log is created before the job starts, so a poll never meets a missing file
+while the job runs, and a stale sentinel from an earlier run is gone. `<cmd>` is
+grouped in `{ … }` so every part of a compound command (`a; b`) is logged, not
+only the last; the newline before `}` keeps a command that ends in a comment
+intact. The job writes its own exit code as a `__DONE_<rc>__` sentinel on the
+log's last line. That sentinel — not "session gone" — is the source of truth for success,
 so a session that vanishes for any other reason is never mistaken for a clean
 exit.
 

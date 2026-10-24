@@ -163,15 +163,13 @@ called by `/apply-use-case` (first apply, greenfield or adoption),
 in memory, to compare against what is on disk). `/create-use-case` authors the
 document and delegates the apply; it renders nothing.
 
-**Where the renderer lives.** There is no committed
-renderer under `tools/`. The agent emits an inline
-`python3 -c '...'` snippet (stdlib + PyYAML) at apply time that reads
-the doc's frontmatter and produces the `{filename: ini-text}` dict.
-The snippet is journaled verbatim as part of the action's
-`## Commands` block, so admins can replay or audit without Claude. The
-mapping below is the contract that snippet must implement; cross-distro
-adjustments (e.g., paths, package names) are the agent's responsibility
-to handle at generation time.
+**Where the renderer lives.** The renderer is committed once, at
+`scripts/drydocc/render.py`, and reached through `render_quadlets`,
+`diff_quadlets` and `audit_probe_run` (§ "The drydocc tools" below). The
+mapping below is the contract that renderer implements. Its one
+distro-specific choice, whether mounts carry the relabel option, is the
+agent's (the `Z` option below); every other cross-distro adjustment is the
+agent's to work out per run, too.
 
 ### `<slug>-<container>.container` (one per `spec.containers.*`)
 
@@ -271,15 +269,17 @@ Rules:
     mounts: one that two containers of this document mount (a `oneshot`
     container counts), or a shared volume, on the owner's mounts and every
     consumer's alike (§ "Shared volumes"). A private relabel by one container
-    locks every other out. Gated on
-    `system_facts.mac_framework` (enum
-    documented in `references/node-profile.md`): include it only when the
-    recorded framework is the kind that relabels bind-mount contexts; omit it
-    when the value is `none`, `unknown`, or a framework that doesn't use this
-    idiom. (An unconditional emit is often harmless — the option is commonly
-    a no-op where nothing enforces relabeling — but "often harmless" is not
-    the same as verified, and the fact exists precisely so this doesn't have
-    to be guessed.)
+    locks every other out. **The agent decides, the renderer does not.** The
+    agent reads `system_facts.mac_framework` (enum documented in
+    `references/node-profile.md`), checks the recorded framework against that
+    framework's own probe tables — never guesses — and passes the verdict to
+    every rendering tool as `relabel: true|false`: `true` only
+    when the recorded framework is the kind that relabels bind-mount contexts;
+    `false` when the value is `none`, `unknown`, or a framework that doesn't
+    use this idiom. (An unconditional emit is often harmless — the option is
+    commonly a no-op where nothing enforces relabeling — but "often harmless"
+    is not the same as verified, and the fact exists precisely so this doesn't
+    have to be guessed.)
   - `ro` — included when the mount declares `ro: true`.
 
   So a read-only mount renders `<src>:<target>:Z,ro` where relabeling
@@ -517,6 +517,60 @@ delete `$ST.watch`. The run log stays as history.
 next elapse. Then `systemctl --user start drydocc-<job>.service` once by hand
 (apply and modify do this, so a broken job fails while the admin is watching,
 not at 3 a.m.), and its run log's last line reads `rc=0`.
+
+## The drydocc tools
+
+The scriptable core of the use-case workflows ships at `scripts/drydocc/`
+as eleven operations, reached two ways with the same names and arguments:
+
+- **As MCP tools**, from `scripts/drydocc/mcp_server.py` (stdio). It needs
+  python3 with the `mcp` and PyYAML packages. Register it from a fork
+  checkout:
+
+  ```json
+  {
+    "mcpServers": {
+      "drydocc": {
+        "command": "python3",
+        "args": ["scripts/drydocc/mcp_server.py"],
+        "cwd": "<fork root>"
+      }
+    }
+  }
+  ```
+
+- **From a shell**, as `python3 scripts/drydocc/drydo.py <operation> …`
+  (`render-quadlets --node <self> --slug <slug> --relabel`). It needs
+  python3 with PyYAML only. This is the fallback when the server is not
+  configured.
+
+| operation | used by |
+|---|---|
+| `render_quadlets` | `/apply-use-case` (this skill's render) |
+| `diff_quadlets` | `/modify-use-case` (render + compare with the node's quadlets) |
+| `write_quadlets` | `/apply-use-case`, `/modify-use-case` (write the changed and added files) |
+| `audit_probe_run` | `/audit-use-case` Tier 1 (probe + quadlet comparison) |
+| `validate_use_case` | the static invariants (every finding, not the first) |
+| `list_use_cases` | `/list-use-cases` |
+| `resume_pointer_status` | `/continue-last-command` |
+| `owes_restore` | the journal's "Rebuilt, not yet restored" query |
+| `lingering_launch`, `lingering_poll`, `lingering_cleanup` | `node-exec`'s `NODE_RUN_LINGER` |
+
+Every operation takes the bound node's name (and a slug), never a path, and
+refuses anything outside `nodes/<node>/`. A node-touching one also takes the
+bound surface. `render_quadlets` and `diff_quadlets` return a `digest` of
+the render; `write_quadlets` requires the digest of the render the admin
+confirmed and refuses if the render changed since, so what lands on the node
+is what was approved. Every comparison ignores trailing newlines: a file
+written with an extra final newline is not a change. A failure comes back
+as an error carrying its message. An
+operation that renders or probes returns a `replay` line: the `drydo.py`
+command that repeats it. That line is what a journal's `## Commands`
+records, so an admin can re-run the step at that entry's commit without
+the agent. No operation prints, logs, or returns a secret value.
+
+When neither python3 nor PyYAML is available where the agent runs, each
+skill's written procedure remains the contract to follow by hand.
 
 ## What this skill does NOT do
 

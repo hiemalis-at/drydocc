@@ -93,25 +93,23 @@ repo-only write authority are in the `conventions` skill's
    error), and every container must pass the validation rules in
    `podman-quadlets` § "Render from spec". These are reported even if every subsequent probe fails.
 
-4. **Run the Tier 1 probe.** Issue the bundled probe script from
-   `references/audit-recipes.md` § "The bundled probe" as a single `NODE_RUN`,
-   substituting from step 3: the slug, the declared container/network/volume
-   names, the migration units and legacy owner (empty when the doc declares
-   none), and the node's
-   `system_facts.firewall.tool`. Each substitution is one of the probe's own
-   header assignments — that block is the list, so fill every line of it. Parse
-   the `<key>=<value>` lines into an in-memory inventory. Capture the full
-   session for the journal.
+4. **Run the Tier 1 probe and compare quadlets.** `audit_probe_run`
+   (`podman-quadlets` § "The drydocc tools") fills the bundled probe's header
+   from the doc and `nodes/<self>/node.yaml`, runs it on the bound surface,
+   and returns the parsed inventory with its `quadlets` already classified
+   against a fresh render (`same`/`changed`/`added`/`dropped`). Pass
+   `firewall_readback` from `references/audit-recipes.md` § "Observed
+   dialects" — never a guess, empty when no row matches — and `relabel` as
+   decided per `podman-quadlets` § "Render from spec". Journal its `replay`
+   line. Without python3 on the agent's side, issue the probe text in
+   `scripts/drydocc/audit_probe.py` (`PROBE_SCRIPT`) by hand instead, its
+   header filled per `references/audit-recipes.md` § "The bundled probe", as
+   one `NODE_RUN` argument with stdin closed, and journal it verbatim.
 
    If the node is unreachable, mark the use-case `outcome: failed`, journal the
    connection error verbatim, and move to the next.
 
-5. **Re-render and compare quadlets.** Emit the inline `python3 -c '...'`
-   renderer implementing `podman-quadlets` `## Render from spec`, apply it to the
-   doc's `spec:`, and diff the result against the `quadlet=` blocks from step 4.
-   Journal the snippet verbatim — the admin must be able to replay the
-   comparison without Claude. This step requires `system_facts.capabilities.python3: present`.
-   Classification rules are in
+5. **Read the quadlet comparison.** Classification rules are in
    `references/audit-recipes.md` § "The quadlet comparison".
 
 6. **Classify Tier 1.** Walk the comparison table in
@@ -169,8 +167,9 @@ repo-only write authority are in the `conventions` skill's
     - `## What was done` — grouped: "OK: …", "Drift (doc-ahead): …", "Drift
       (node-ahead): …", "Unknown: …", "Promoted: …", "Declared: …", "Ignored: …",
       "Noted: …".
-    - `## Commands` — every probe and the render snippet verbatim, as actually
-      issued (including the SSH wrapper in client mode, per `node-exec`).
+    - `## Commands` — every probe as actually issued (including the SSH
+      wrapper in client mode, per `node-exec`); a tool step is recorded as its
+      `replay` line.
     - `## Notes / drift detected` — narrative for every finding the admin left
       unresolved, every `lost on rebuild` mutation with its recommended
       `/modify-use-case` invocation, and every `UNKNOWN` with why the probe

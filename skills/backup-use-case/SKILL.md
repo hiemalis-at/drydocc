@@ -181,9 +181,8 @@ the application behind them.
 6. **Journal** per `conventions/references/journal.md`, scope
    `use-case/<slug>`. `## What was done` names the phase (setup/activate),
    every target/credential action taken, and (activate) every caught-up run.
-   `## Commands` includes the rendered script text verbatim (mirrors how
-   `podman-quadlets` render snippets are journaled) so an admin can inspect
-   or replay it without the agent. **Never** journal a secret value, the
+   `## Commands` includes the rendered script text verbatim so an admin can
+   inspect or replay it without the agent. **Never** journal a secret value, the
    encryption passphrase, or an SSH private key.
 
 7. **Commit + push** the manifest, any target-file change, and the journal

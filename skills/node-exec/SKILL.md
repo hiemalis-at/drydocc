@@ -85,6 +85,12 @@ on the node; the agent polls for completion and captures the log. On the node
 surface, lingering is unnecessary (run inline). See `references/lingering.md`
 for the full recipe; the contract:
 
+`lingering_launch`, `lingering_poll` and `lingering_cleanup`
+(`podman-quadlets` § "The drydocc tools") run this recipe from the node name
+alone: they read the connection block from `nodes/<self>/node.yaml` and pick
+tmux or nohup from `system_facts.capabilities.tmux`. The recipe remains the
+contract.
+
 - Session/log name is `dd-<slug>-<step>` (derived from the use-case slug + a
   short step label) so a re-run **re-attaches** to an in-flight job instead of
   relaunching it — this is what makes the long step resumable across a dropped

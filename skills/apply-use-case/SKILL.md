@@ -440,9 +440,11 @@ from scratch.
    - If `has_secrets`, write the env file assembled in step 4:
      `sudo install -m 600 -o doccap -g doccap /dev/stdin <target_path>` (piped
      stdin; `node-exec` transports the body unchanged and never echoes it).
-   - Render quadlets in-memory with an inline `python3 -c '...'` snippet
-     implementing `podman-quadlets` § "Render from spec". Journal the snippet
-     verbatim. Show the admin the rendered files and get confirmation
+   - Render quadlets in-memory with `render_quadlets` (`podman-quadlets`
+     § "The drydocc tools"), passing `relabel` as decided per
+     `podman-quadlets` § "Render from spec", and keep its `digest`. Journal
+     the result's `replay` line. Show the admin the rendered files and get
+     confirmation
      `[decision: apply-use-case.confirm-render]`. If
      any declared host port — published, or a host-network container's
      `listens:` — is below the node's unprivileged port floor, list the floor
@@ -451,7 +453,10 @@ from scratch.
      `listens:`) needs it, per
      `podman-quadlets` § "Privileged ports" — otherwise rootless podman
      cannot publish a port below 1024 and the container fails to start.
-   - Write each file atomically:
+   - Write the quadlets with `write_quadlets`, passing the bound surface, the
+     same `relabel`, and the `digest` of the render the admin confirmed; it
+     refuses if the render changed since. Journal its `replay` line. Without
+     the tools, write each file by hand through `node-exec`'s piping contract:
      `printf '%s\n' "<ini-text>" | install -m 644 /dev/stdin ~/.config/containers/systemd/<slug>-<name>.<kind>`
    - `systemctl --user daemon-reload`
    - Start network units first, then containers in topological order of

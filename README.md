@@ -22,6 +22,12 @@ It has three parts:
   reach the nodes over Tailscale.
 - **An [`AGENTS.md`](AGENTS.md).** It holds the invariants every agent keeps:
   node scoping, an append-only journal, and secrets that never touch git.
+- **Optional [agent tools](skills/podman-quadlets/SKILL.md#the-drydocc-tools).**
+  `scripts/drydocc/` ships the skills' scriptable steps — the quadlet
+  renderer, the audit probe, the use-case listing, the lingering job
+  control — as a small Python package your agent calls as MCP tools or
+  through the `drydo.py` command line, instead of re-deriving each step by
+  hand.
 
 There is no CLI to learn and no control plane to run. **The repository is the
 infrastructure:** you fork it, and the fork is your fleet. Any agent that reads

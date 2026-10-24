@@ -8,6 +8,54 @@ version is 0, a minor release may change conventions or the command surface.
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-10-24
+
+### Agent tooling
+
+- **The use-case workflows' scriptable steps ship as eleven operations**, under
+  `scripts/drydocc/`, reached either as MCP tools (`mcp_server.py`, needs
+  python3 with `mcp` and PyYAML) or from a shell (`drydo.py`, needs python3
+  with PyYAML). Both expose the same operations with the same arguments; see
+  `podman-quadlets` § "The drydocc tools". They cover the quadlet render
+  and write (`render_quadlets`, `diff_quadlets`, `write_quadlets`), the `/audit-use-case` Tier 1 probe with
+  its quadlet comparison (`audit_probe_run`), the static invariants
+  (`validate_use_case`, every finding at once), the `/list-use-cases` table,
+  the resume-pointer classification, the journal's "rebuilt, not yet
+  restored" query, and `node-exec`'s lingering launch/poll/cleanup. The
+  skills' written procedures remain the contract.
+- **`write_quadlets` writes only what the admin confirmed.** It takes the
+  digest `render_quadlets`/`diff_quadlets` returned and refuses if the
+  render changed since, writes only changed and added files, each atomically,
+  and leaves removed ones for `/modify-use-case` to take down.
+- **A difference only in trailing newlines is never drift.** A quadlet
+  written with an extra final newline (as `node-exec`'s by-hand piping can
+  do) no longer reads as changed in an audit or a modify.
+- **Operations take a node name and a slug, never a path**, and refuse
+  anything outside `nodes/<node>/`. The connection details and the tmux/nohup
+  choice come from the node's `node.yaml`.
+- **A rendering or probing operation returns a `replay` line**: the
+  `drydo.py` command that repeats it. A journal's `## Commands` records that
+  line instead of a verbatim render snippet or probe script, and an admin can
+  re-run it at the entry's commit without an agent.
+- **The relabel option's distro-specific choice stays the agent's.** The
+  renderer takes a decided `relabel: true|false` for the mount `Z`/`z`
+  option; it never reads `system_facts.mac_framework`, an open vocabulary a
+  script cannot close. The audit probe takes the firewall read-back from the
+  verified dialect table as an argument.
+- **Lingering steps log a compound command whole**, and a poll that finds
+  neither a running job nor a log reports the job `killed` instead of failing.
+- **The distro-agnosticism gate also covers the shipped scripts**: a
+  dialect name in a tool's comment or string is caught the way it is in
+  prose.
+
+### Lab
+
+- **The pi adapter runs the fork's drydocc MCP server.** `pi.sh` registers
+  `scripts/drydocc/mcp_server.py` (when the ref ships it) in the run's
+  isolated home with direct exposure, so the lab agent calls the
+  `mcp__drydocc__*` tools like built-ins instead of driving the CLI by
+  hand; a ref without the server runs unchanged.
+
 ## [0.4.1] - 2026-10-20
 
 ### Secrets

@@ -375,6 +375,14 @@ Composition, from the bottom up:
   journaled under that command's scope.
 - **The lab** (`lab`) runs all of the above against local VMs (§4, "The
   lab"). It is invoked from the admin's own checkout, never on a node.
+- **The agent tools** (`scripts/drydocc/`) hold the committed
+  implementations of the scriptable steps the skills describe — the quadlet
+  renderer, the audit probe, the use-case listing, the resume-pointer
+  classification, the lingering launch/poll/cleanup — as one set of
+  operations exposed both as MCP tools (`mcp_server.py`) and as a command
+  line (`drydo.py`). An operation takes a node name, never a path, and its
+  `replay` line is what the journal records. The skills' procedures remain
+  the contract.
 
 ## 9. Document topology
 

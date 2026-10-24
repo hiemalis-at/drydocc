@@ -12,6 +12,9 @@
 #   exit 75      a bad key, an account setting, the shared free-model daily cap, or a
 #                chain with no model left — never a verdict on the code under test
 #   meta         $DRYDOCC_LAB_TRANSCRIPT.meta.json: the models used, the request count
+#   mcp          the fork's drydocc MCP server, when this ref ships it and
+#                python3 hosts it: registered user-level in the isolated home,
+#                direct exposure; a registration failure is noted, never fatal
 #
 # pi names skills `/skill:<name>`; pi/skill-commands.ts gives them their canonical
 # `/<name>`. pi/loop-guard.ts stops a model repeating one tool call: the step fails. DRYDOCC_OPENROUTER_URL points pi and the preflight at another
@@ -39,6 +42,24 @@ fi
 # (DRYDOCC_PI_RETRIES lowers that, e.g. for the adapter's own tests).
 printf '{"retry": {"maxRetries": %d, "baseDelayMs": 2000, "maxAgentDelayMs": 60000}}\n' \
   "${DRYDOCC_PI_RETRIES:-12}" > "$HOME/.pi/agent/settings.json"
+# The fork's drydocc MCP server, when this ref ships it and python3 can host
+# it: registered user-level in the isolated home, stdio, direct exposure so
+# the model calls the tools without codeme; by absolute path, so the server
+# spawns whatever pi's working directory is. A ref without the server, or a
+# python3 without the mcp and PyYAML packages, runs on — the tools are simply
+# absent.
+mcp_tools=0
+[ -e "scripts/drydocc/mcp_server.py" ] && python3 -c 'import mcp, yaml' >/dev/null 2>&1 && mcp_tools=1
+register_mcp() {
+  [ "$mcp_tools" = 1 ] || return 0
+  pi mcp add drydocc --exposure direct \
+    --description "drydocc fork tools: validate use-cases, render and write quadlets, lingering sessions" \
+    -- python3 "$PWD/scripts/drydocc/mcp_server.py" >/dev/null 2>&1 || {
+    [ -n "${DRYDOCC_LAB_TRANSCRIPT:-}" ] && \
+      printf 'pi.sh: the drydocc MCP server is not registered — no mcp__drydocc__* tools\n' \
+        >> "$DRYDOCC_LAB_TRANSCRIPT.stderr"
+  }
+}
 # pi's attribution headers stay on: OpenRouter serves some free models only to
 # the agent harnesses it recognises by them (403 "only available on agentic harnesses").
 export PI_SKIP_VERSION_CHECK=1
@@ -68,6 +89,11 @@ if [ "${1:-}" = "--check" ]; then
   elif [ "${#chain[@]}" -eq 0 ]; then
     ready=false detail="no model: DRYDOCC_LAB_MODEL and pi/models are both empty"
   fi
+  if [ "$mcp_tools" = 1 ]; then
+    detail="$detail; the fork's drydocc MCP tools are available (direct exposure)"
+  elif [ -e "scripts/drydocc/mcp_server.py" ]; then
+    detail="$detail; python3 lacks the mcp or PyYAML package — the drydocc MCP tools will be missing"
+  fi
   python3 -c 'import json, sys; print(json.dumps({"ready": sys.argv[1] == "true", "cost": sys.argv[4],
     "model": sys.argv[2], "detail": sys.argv[3]}, ensure_ascii=False))' "$ready" "${chain[0]:-}" "$detail" "$cost"
   exit 0
@@ -75,6 +101,7 @@ fi
 
 if [ "${1:-}" = "--interactive" ]; then
   shift
+  register_mcp
   exec pi --approve -e "$ext" -e "$guard" --provider openrouter --model "${chain[0]:?no model in the chain}" "$@"
 fi
 
@@ -97,6 +124,7 @@ deadline=$(( $(date +%s) + DRYDOCC_LAB_TIMEOUT ))
 : > "$DRYDOCC_LAB_TRANSCRIPT"
 errlog="$DRYDOCC_LAB_TRANSCRIPT.stderr"
 : > "$errlog"
+register_mcp
 meta="$DRYDOCC_LAB_TRANSCRIPT.meta.json"
 used=()
 

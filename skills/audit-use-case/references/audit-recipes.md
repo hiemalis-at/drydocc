@@ -22,8 +22,12 @@ want lingering, it does not belong in an audit.
 One bundled script, emitting stable `<key>=<value>` lines, in the shape
 `onboard-node` established, including how it is sent: as an argument, with
 stdin closed, never as a `bash -s` heredoc that a prompting command could
-swallow. `$SLUG` is the use-case slug; `$CONTAINERS`,
-`$NETWORKS`, `$VOLUMES` are space-separated names read from the doc's
+swallow. The script text lives in exactly one place:
+`scripts/drydocc/audit_probe.py` (`PROBE_SCRIPT`) — do not copy it here; two
+copies drift, and they already have once. `audit_probe_run` fills its
+header from the doc and `node.yaml` (the firewall read-back is its
+`firewall_readback` argument), runs it, and parses the output. `$SLUG` is the
+use-case slug; `$CONTAINERS`, `$NETWORKS`, `$VOLUMES` are space-separated names read from the doc's
 frontmatter; `$MIGRATION_UNITS` are the doc's `## Migration` `units:` entries
 (or its single `unit:`), `$LEGACY_OWNER` its `owner:` and `$LEGACY_NAMES` the
 legacy names its `containers:` pairs map to (the spec keys themselves when the
@@ -32,6 +36,9 @@ line is absent). The three `FIREWALL_*` values come from
 (`container=`, `unit=`, `port=`, `firewall=`, `quadlet=`, `filehash=`,
 `shared=`, `jobfile=`, `jobtimer=`, `joblast=`, `migration_unit=`,
 `legacy_container=`, `volns=`) accumulate.
+
+The header assignments below are the contract `audit_probe_run` fills, and
+the one an agent without python3 fills by hand:
 
 ```bash
 SLUG=<slug>
@@ -43,157 +50,15 @@ SHARED_MOUNTS="<space-separated <owner-slug>/<vol> values of every from: mount; 
 JOBS="<space-separated spec.jobs names; empty if none>"
 MIGRATION_UNITS="<space-separated units: entries (a unit:, as one entry) from ## Migration; empty if none>"
 LEGACY_OWNER=<owner: from ## Migration; empty when absent or doccap>
-LEGACY_NAMES="<space-separated legacy container names, only when LEGACY_OWNER is set>"
+LEGACY_NAMES="<space-separated legacy container names, only when LEGACY_OWNER is set; the spec keys themselves when the containers: line is absent>"
 FIREWALL_TOOL=<node.yaml:system_facts.firewall.tool — verbatim, whatever the probe recorded; the set is open, not two values, not a fixed list>
 FIREWALL_TAG_MECHANISM=<node.yaml:system_facts.firewall.tag_mechanism — verbatim; `none` means no rule on this node can carry the slug>
 FIREWALL_READBACK=<rule-listing command for this tool, from § "Observed dialects" below; EMPTY when no verified idiom exists for it — never a guess>
-
-# Containers — presence, state, image, digest, health
-for c in $CONTAINERS; do
-  podman inspect "$SLUG-$c" --format \
-    'container={{.Name}}|{{.State.Status}}|{{.ImageName}}|{{.Image}}|{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' \
-    2>/dev/null || echo "container=$SLUG-$c|absent|||"
-done
-
-# Any container matching the slug prefix that we did NOT ask about
-podman ps --all --filter "name=^$SLUG-" --format '{{.Names}}' 2>/dev/null \
-  | sed 's/^/seen_container=/'
-
-# Image digests — catches a manual pull that moved a pinned tag
-for c in $CONTAINERS; do
-  img=$(podman inspect "$SLUG-$c" --format '{{.ImageName}}' 2>/dev/null) || continue
-  podman image inspect "$img" --format "digest=$c|{{index .RepoDigests 0}}" 2>/dev/null \
-    || echo "digest=$c|unknown"
-done
-
-# Systemd user units — enabled, active, restart count
-for c in $CONTAINERS; do
-  systemctl --user show "$SLUG-$c.service" \
-    -p UnitFileState -p ActiveState -p NRestarts --value 2>/dev/null \
-    | paste -sd'|' - | sed "s/^/unit=$SLUG-$c.service|/"
-done
-for n in $NETWORKS; do
-  systemctl --user show "$SLUG-$n-network.service" \
-    -p UnitFileState -p ActiveState -p NRestarts --value 2>/dev/null \
-    | paste -sd'|' - | sed "s/^/unit=$SLUG-$n-network.service|/"
-done
-
-# Networks
-podman network ls --filter "name=^$SLUG-" --format 'network={{.Name}}' 2>/dev/null
-
-# Volumes — bind directories, NOT `podman volume ls` (no .volume units are emitted).
-# volns= is the same directory as doccap's containers see it, for owner: container:<uid>:<gid>
-for v in $VOLUMES; do
-  stat -c "volume=$v|%U:%G|%a" "/var/lib/drydocc/volumes/$SLUG/$v" 2>/dev/null \
-    || echo "volume=$v|absent|"
-  podman unshare stat -c "volns=$v|%u:%g|%a" "/var/lib/drydocc/volumes/$SLUG/$v" 2>/dev/null \
-    || echo "volns=$v|unknown|"
-done
-
-# Files volumes — one line per file: relative path and sha256, never content
-for v in $FILES_VOLUMES; do
-  d="/var/lib/drydocc/volumes/$SLUG/$v"
-  if [ ! -d "$d" ]; then echo "filehash=$v|absent|"; continue; fi
-  out=$(cd "$d" && find . -type f -print0 | sort -z | xargs -0r sha256sum) \
-    || { echo "filehash=$v|unreadable|"; continue; }
-  [ -n "$out" ] || { echo "filehash=$v|empty|"; continue; }
-  printf '%s\n' "$out" | sed "s|^\([0-9a-f]*\)  \./\(.*\)\$|filehash=$v\|\2\|\1|"
-done
-
-# Shared volumes this use-case reads — the owner's directory must exist
-for m in $SHARED_MOUNTS; do
-  if [ -d "/var/lib/drydocc/volumes/$m" ]; then echo "shared=$m|present"
-  else echo "shared=$m|absent"; fi
-done
-
-# Listening ports
-ss -tulpnH 2>/dev/null | awk '{print "port="$1"|"$5}'
-
-# Firewall rules tagged for this use-case. Five outcomes, kept distinguishable:
-# rules read back / read back but none tagged / tool known but this read failed /
-# no verified read-back for this tool / rules cannot carry a tag at all.
-if [ "$FIREWALL_TOOL" = none ] || [ "$FIREWALL_TAG_MECHANISM" = none ]; then
-  echo "firewall=untaggable|$FIREWALL_TOOL|$FIREWALL_TAG_MECHANISM"
-elif [ -z "$FIREWALL_READBACK" ]; then
-  echo "firewall=no-probe|$FIREWALL_TOOL"
-elif rules=$(sudo -n sh -c "$FIREWALL_READBACK" 2>/dev/null); then
-  tagged=$(printf '%s\n' "$rules" | grep -F "$SLUG") || tagged=""
-  if [ -n "$tagged" ]; then
-    printf '%s\n' "$tagged" | sed 's/^/firewall=/'
-  else
-    echo "firewall=none-tagged|$FIREWALL_TOOL"
-  fi
-else
-  echo "firewall=unreadable|$FIREWALL_TOOL"
-fi
-
-# Secrets env file — mode, owner, and key NAMES only (never values)
-if [ -f "/etc/drydocc/secrets/$SLUG.env" ]; then
-  stat -c "envfile=%U:%G|%a" "/etc/drydocc/secrets/$SLUG.env"
-  sudo -n cut -d= -f1 "/etc/drydocc/secrets/$SLUG.env" 2>/dev/null \
-    | grep -E '^[A-Z0-9_]+$' | sed 's/^/envkey=/'
-else
-  echo "envfile=absent|"
-fi
-
-# Units the use-case replaced, from ## Migration units: — a system unit bare,
-# a user's own unit as <user>/<unit>, asked of that user's manager
-for u in $MIGRATION_UNITS; do
-  case "$u" in
-    */*) sc="sudo -n systemctl --user -M ${u%%/*}@"; unit="${u#*/}" ;;
-    *)   sc="systemctl"; unit="$u" ;;
-  esac
-  enabled=$($sc is-enabled "$unit" 2>/dev/null || true); [ -n "$enabled" ] || enabled="unknown"
-  active=$($sc is-active "$unit" 2>/dev/null || true);   [ -n "$active" ]  || active="unknown"
-  echo "migration_unit=$u|$enabled|$active"
-done
-
-# Legacy containers of another owner — after the cut-over none may run
-if [ -n "$LEGACY_OWNER" ]; then
-  OUID=$(id -u "$LEGACY_OWNER" 2>/dev/null) || OUID=""
-  for n in $LEGACY_NAMES; do
-    st=$( [ -n "$OUID" ] && sudo -n -u "$LEGACY_OWNER" XDG_RUNTIME_DIR="/run/user/$OUID" \
-          podman inspect "$n" --format '{{.State.Status}}' 2>/dev/null ) || st=""
-    if [ -z "$OUID" ]; then echo "legacy_container=$n|unknown"
-    elif [ -n "$st" ]; then echo "legacy_container=$n|$st"
-    else echo "legacy_container=$n|absent"; fi
-  done
-fi
-
-# Quadlets — full text, for the render comparison
-for f in ~/.config/containers/systemd/"$SLUG"-*.container \
-         ~/.config/containers/systemd/"$SLUG"-*.network; do
-  if [ -f "$f" ]; then
-    echo "quadlet=$f"
-    echo "---8<---"
-    cat "$f"
-    echo "--->8---"
-  fi
-done
-
-# Jobs — rendered files (same comparison as quadlets), timer state, last run
-for f in ~/.config/drydocc/job-"$SLUG"-*.sh \
-         ~/.config/systemd/user/drydocc-job-"$SLUG"-*.service \
-         ~/.config/systemd/user/drydocc-job-"$SLUG"-*.timer; do
-  if [ -f "$f" ]; then
-    echo "jobfile=$f"
-    echo "---8<---"
-    cat "$f"
-    echo "--->8---"
-  fi
-done
-for j in $JOBS; do
-  systemctl --user show "drydocc-job-$SLUG-$j.timer" \
-    -p UnitFileState -p ActiveState --value 2>/dev/null \
-    | paste -sd'|' - | sed "s/^/jobtimer=$j|/"
-  last=$(tail -n 1 "/var/lib/drydocc/jobs/$SLUG-$j.log" 2>/dev/null) || last=""
-  echo "joblast=$j|${last:-never}"
-done
 ```
 
-`sudo -n` is used deliberately: a node where `doccap` cannot read the firewall
-state or the env file yields `UNKNOWN` for that category rather than hanging on
-a password prompt.
+The probe reads the firewall rules and the env file's key names with
+`sudo -n` on purpose: a node where `doccap` cannot read them yields `UNKNOWN`
+for that category rather than hanging on a password prompt.
 
 ### Observed dialects — evidence, not the supported list
 
@@ -214,22 +79,22 @@ the tool elsewhere.
 
 ### The quadlet comparison
 
-Re-render `spec:` in memory with the same inline `python3 -c '...'` snippet
-`/apply-use-case` and `/modify-use-case` use — `podman-quadlets`
-`## Render from spec` is the contract it implements. There is no
-committed renderer; the snippet is journaled verbatim so an admin can replay the
-comparison without Claude.
+`audit_probe_run` re-renders `spec:` in memory (`podman-quadlets`
+§ "Render from spec" is the contract) and classifies every file against the
+`quadlet=` blocks: `same`, `changed` (with the unified diff), `added` (rendered,
+missing on disk) or `dropped` (on disk, not rendered). Its `replay` line lets an
+admin repeat the comparison without the agent. A difference only in trailing
+newlines is not drift: `node-exec`'s piping contract can add one, and an editor
+can drop one. Each class maps to a finding:
 
-Compare the rendered `{filename: ini-text}` dict against the `quadlet=` blocks:
-
-- rendered file missing on disk → `DRIFT` / `doc-ahead`
-- on-disk text differs from rendered → `DRIFT` / **direction depends**: a
+- `same` → `OK`
+- `added` → `DRIFT` / `doc-ahead`
+- `changed` → `DRIFT` / **direction depends**: a
   difference the doc could express is `node-ahead` (someone hand-edited a value
   that belongs in `spec:`); anything else is `doc-ahead`. When in doubt, report
   `node-ahead` and let the capture-back menu's `[v] view` show the admin the
   unified diff.
-- on-disk `<slug>-*` file the renderer does not produce → `DRIFT` /
-  `node-ahead`, recovery `not rebuildable`
+- `dropped` → `DRIFT` / `node-ahead`, recovery `not rebuildable`
 
 ### Comparison table
 
@@ -244,7 +109,7 @@ Compare the rendered `{filename: ini-text}` dict against the `quadlet=` blocks:
 | Volumes | `volume=` vs `spec.volumes.*`; `volns=` instead for an `owner: container:<uid>:<gid>` volume | dir exists, owner and mode match (defaults `doccap:doccap`, `0750`; a container-form owner as `<uid>:<gid>` on the `volns=` line) | absent, or owner/mode differ | `stat` denied; `volns=…|unknown` for a container-form owner |
 | Ports | `port=` + `firewall=` vs `ports:`, each container's published host ports, and each host-network container's `listens:` | every single port in `ports:`, every published host port (on its bind address, if one is given) and every `listens:` single port listening — a range is never listening-checked; and — where a rule can be attributed at all — a `firewall=` line matching each `ports:` entry, a range by one rule covering it in the tool's range form | a single port declared in any of the three places but not listening; a published port listening on an address other than the declared bind address (a loopback publish answering on every address); a tagged rule with no matching `ports:` entry; `firewall=none-tagged` while ports are declared | `firewall=untaggable` (rules on this node cannot carry the slug: `tool: none` or `tag_mechanism: none`); `firewall=no-probe` (tool known, no verified read-back in § "Observed dialects"); `firewall=unreadable` (`sudo -n` denied, or the read-back command failed); or `ss` non-zero |
 | Files | `filehash=` vs the sha256 list of `<slug>.files/<vol>/` in the fork at `HEAD`, and at `last_applied_commit` | node list equals `HEAD`'s | **doc-ahead**: node equals `last_applied_commit`'s but not `HEAD`'s (git changed, never synced — `/modify-use-case`); **node-ahead**: node differs from `last_applied_commit`'s (edited on the node — recovery `lost on rebuild`); `absent` or `empty` while git holds files | `unreadable` |
-| Jobs | `jobfile=` vs the rendered script and units (compared as quadlets are, § "The quadlet comparison"); `jobtimer=`, `joblast=` vs `spec.jobs` and each `schedule` | every job's files byte-identical, timer `enabled` + `active`, and its last line `rc=0` no older than its interval + 1 h | a file missing, extra or different; a timer not enabled or not active; last line `rc≠0` (failing job); last run older than its interval + 1 h (missed runs) | `joblast=…|never` on a job applied less than one interval ago |
+| Jobs | `jobfile=` vs the rendered script and units (compared as quadlets are, § "The quadlet comparison"); `jobtimer=`, `joblast=` vs `spec.jobs` and each `schedule` | every job's files identical up to trailing newlines, timer `enabled` + `active`, and its last line `rc=0` no older than its interval + 1 h | a file missing, extra or different; a timer not enabled or not active; last line `rc≠0` (failing job); last run older than its interval + 1 h (missed runs) | `joblast=…|never` on a job applied less than one interval ago |
 | Shared mounts | `shared=` vs every `from:` mount | every owner directory `present` | any `absent` (the owner was removed or never applied) | — |
 | Secrets | `envfile=` + `envkey=` vs `<slug>.secrets.yaml` | file present, `0600 doccap:doccap`, key names match `keys[].name` | `has_secrets: true` but file absent; wrong mode/owner; key names present that the manifest does not declare | env file unreadable |
 | Status coherence | derived | `active` with every declared container running (every non-`oneshot` one), **and** — only if the doc declares a migration unit — that unit **not live** in the sense defined below (both fields known, neither reporting liveness); `planned` with nothing live | `active` with nothing running; `active` while a declared migration unit is still **live** (cut-over incomplete — container and host service both serving); `planned` with a running `container=` or a live migration unit (the `/onboard-node` hand-off) | containers `UNKNOWN`, or a declared migration unit **indeterminate** (either field `unknown` — systemctl unreachable or absent) |

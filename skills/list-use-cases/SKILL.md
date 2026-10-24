@@ -49,6 +49,10 @@ metadata:
    if those siblings exist. A missing manifest is normal, not an error — both
    are optional.
 
+   `list_use_cases` (`podman-quadlets` § "The drydocc tools") does steps 2–4
+   and renders the table below in one call; this procedure remains the
+   contract.
+
 4. **Render the table.** Columns:
 
    | name | status | containers | ports | last_applied | last_audited | last_backup |

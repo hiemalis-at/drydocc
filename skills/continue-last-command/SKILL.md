@@ -71,6 +71,10 @@ Who writes what:
    passing the node as the explicit override. That binding must not replace
    the pointer, because it is this run's.
 
+   `resume_pointer_status` (`podman-quadlets` § "The drydocc tools") reads
+   the pointer and runs step 2's classification in one call; the order below
+   remains the contract.
+
 2. **Classify the run.** Check in this order:
    - **`state: waiting_on_secret`** — paused. Go to step 3.
    - **`state: running`, and the journal shows it finished** — report the

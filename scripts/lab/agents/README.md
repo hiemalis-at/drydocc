@@ -74,6 +74,12 @@ the daily cap that every free model shares.
 [`pi/loop-guard.ts`](pi/loop-guard.ts) stops a model that repeats one tool
 call — one free model called `echo "DONE"` 272 times in a turn: the fifth
 identical call in a row is refused, the tenth ends the step as failed.
+`pi.sh` also registers the fork's drydocc MCP server
+([`scripts/drydocc/mcp_server.py`](../../drydocc/mcp_server.py), when the ref
+ships it and python3 hosts it) in the isolated home with direct exposure, so
+the model calls the `mcp__drydocc__*` tools like built-ins. Without the server
+or the packages the run degrades to the CLI, and `--check` and the run's
+stderr say so.
 
 Setup, once:
 

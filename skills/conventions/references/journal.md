@@ -141,7 +141,9 @@ contain** — the application may already have initialised fresh files on the
 empty volumes the rebuild created, so file counts are not evidence.
 
 Read by `/backup-use-case` (its rebuild guard), `/rebuild-node` (data triage),
-and `/node-maintenance` (`data-recoverable`).
+and `/node-maintenance` (`data-recoverable`). The `owes_restore` operation
+(`podman-quadlets` § "The drydocc tools") answers it for one use-case; this
+definition remains the contract.
 
 ## Rules
 

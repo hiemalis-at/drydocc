@@ -20,6 +20,15 @@ cred="$DRYDOCC_LAB_REAL_HOME/.vibe/.env"
 if [ -e "$cred" ]; then
   ln -sfn "$cred" "$HOME/.vibe/.env"
 fi
+# The fork's drydocc MCP server, when this ref ships it: registered in the
+# isolated home, stdio, its path relative to the adapter's cwd (the fork root).
+if [ -e "scripts/drydocc/mcp_server.py" ] && command -v vibe >/dev/null; then
+  vibe mcp add drydocc --transport stdio --command python3 \
+    --arg scripts/drydocc/mcp_server.py >/dev/null 2>&1 || true
+fi
+# vibe writes its session/plugin cache read-only (dr-x dirs, r-- files); the
+# lab's destroy_run could not rmtree it. Restore writability on the way out.
+trap 'chmod -R u+w "$HOME/.vibe" >/dev/null 2>&1 || true' EXIT
 # MISTRAL_API_KEY in the environment works as well; vibe reads it first.
 if [ -n "${DRYDOCC_LAB_MODEL:-}" ]; then
   export VIBE_ACTIVE_MODEL="$DRYDOCC_LAB_MODEL"
@@ -105,6 +114,13 @@ for _ in 1 2 3; do
   session=$(last_field session)
   [ -n "$session" ] || break
   run_round "$CONTINUE" --resume "$session" || rc=$?
+  # vibe 2.26+ rejects -p together with --resume, so a session cannot be
+  # continued in programmatic mode at all: the agent's last reply is final.
+  if [ "$rc" -ne 0 ] && grep -q "cannot be used with '--resume" "$errlog"; then
+    echo "vibe.sh: this vibe CLI has no programmatic resume; the step ends with the agent's last reply" >> "$errlog"
+    rc=0
+    break
+  fi
   is_infra && exit 75
 done
 exit "$rc"

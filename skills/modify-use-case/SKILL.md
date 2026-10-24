@@ -22,8 +22,10 @@ metadata:
   - **`on_client`** — the admin laptop drives the node over SSH; every
     node-touching command routes through `node-exec` (long steps linger). Use
     only when the node can't host a VS Code Remote Server.
-  - Commands are agent-generated ad-hoc bash + inline `python3 -c '...'`
-    snippets and are journaled verbatim.
+  - Commands are agent-generated ad-hoc bash and journaled verbatim; the
+    render, diff and write run through `diff_quadlets` and `write_quadlets`
+    (`podman-quadlets` § "The drydocc tools"), journaled as their `replay`
+    lines.
 - **Reads:** `nodes/<self>/use-cases/<slug>.md` and siblings
   (`<slug>.secrets.yaml`, `<slug>.audit.yaml`); current on-node quadlets at
   `~/.config/containers/systemd/<slug>-*`.
@@ -100,21 +102,16 @@ metadata:
 5. **Apply the diff** to the doc and any siblings (including the audit
    manifest from step 3b).
 
-6. **Re-render quadlets in-memory** via an inline `python3 -c '...'`
-   snippet implementing `podman-quadlets` `## Render from spec`.
+6. **Re-render quadlets in-memory and diff them against the node** with
+   `diff_quadlets` (`podman-quadlets` § "The drydocc tools"), passing the
+   bound surface and `relabel` as decided per `podman-quadlets`
+   § "Render from spec". Keep its `digest`, and journal its `replay` line.
 
-7. **Read current on-node quadlets and diff:**
-
-   ```bash
-   for f in ~/.config/containers/systemd/<slug>-*.container ~/.config/containers/systemd/<slug>-*.network; do
-     [ -f "$f" ] && { echo "=== $f ==="; cat "$f"; }
-   done
-   ```
-
-   Classify every file as **changed**, **added** (rendered, not on disk), or
-   **dropped** (on disk, no longer rendered — a container or network the
-   mutation removed). Show the unified diff, including each dropped file in
-   full, to the admin; abort if they decline
+7. **Review the diff.** It classifies every file as **same**, **changed**,
+   **added** (rendered, not on disk), or **dropped** (on disk, no longer
+   rendered — a container or network the mutation removed). Show the unified
+   diff, including each dropped file in full, to the admin; abort if they
+   decline
    `[decision: modify-use-case.confirm-render]`. If a new host port (published, or
    a host-network container's `listens:`) is below the node's unprivileged port
    floor, list the floor change here too.
@@ -145,7 +142,12 @@ metadata:
    with the command to remove it, as `/remove-use-case` does for a whole
    use-case.
 
-8. **Write changed and added files** (per file: `printf '%s\n' "<text>" |
+8. **Write changed and added files** with `write_quadlets`, passing the bound
+   surface, the same `relabel`, and the `digest` from step 6, which the admin
+   confirmed in step 7; it refuses if the render changed since. Its `written`
+   list is what step 10 restarts or starts. Journal its `replay` line.
+   Without the tools, write each file by hand through `node-exec`'s piping
+   contract (`printf '%s\n' "<text>" |
    install -m 644 /dev/stdin ~/.config/containers/systemd/<slug>-<name>.<kind>`).
 
 9. **`systemctl --user daemon-reload`**.
