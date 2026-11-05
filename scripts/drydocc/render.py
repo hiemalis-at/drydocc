@@ -38,6 +38,54 @@ def _esc(value) -> str:
     return str(value).replace("%", "%%")
 
 
+# resources: mapping keys, in the fixed order their [Service] lines emit.
+_RESOURCE_KEYS = ("memory_max", "memory_high", "memory_swap_max", "cpus", "cpu_weight")
+_SIZE_RE = re.compile(
+    r"^(infinity|[0-9]+(\.[0-9]+)?(B|K|M|G|T|P|E|KiB|MiB|GiB|TiB|PiB|EiB)?)$", re.IGNORECASE
+)
+
+
+def _size_bytes(value) -> float:
+    """A size string in bytes, for ordering checks only."""
+    s = str(value).strip()
+    if s.lower() == "infinity":
+        return float("inf")
+    m = re.fullmatch(r"([0-9]+(?:\.[0-9]+)?)([A-Za-z]{0,3})", s)
+    suffix = (m.group(2) or "B").upper()
+    if suffix.endswith("IB"):
+        suffix = suffix[0]
+    return float(m.group(1)) * 1024 ** "BKMGTPE".index(suffix)
+
+
+def _resource_lines(c: dict) -> list[str]:
+    """The ordered [Service] lines for a container's ``resources:`` mapping."""
+    res = c.get("resources") or {}
+    lines: list[str] = []
+    for key, unit_key in (
+        ("memory_max", "MemoryMax"),
+        ("memory_high", "MemoryHigh"),
+        ("memory_swap_max", "MemorySwapMax"),
+    ):
+        if key in res:
+            v = str(res[key]).strip()
+            # Plain bytes, not suffixed sizes: the rootless user manager rejects
+            # "256MiB" with EINVAL ("Invalid memory limit"), while plain bytes
+            # and the keyword infinity apply.
+            rendered = "infinity" if v.lower() == "infinity" else str(int(_size_bytes(v)))
+            lines.append(f"{unit_key}={_esc(rendered)}")
+    if "cpus" in res:
+        quota = int(round(float(res["cpus"]) * 100))
+        # The quota's own % is not a document value and not a % specifier:
+        # CPUQuota's parser runs no specifier expansion and takes the sign
+        # literally, so a doubled %% is rejected as an invalid quota (the
+        # manager logs "Invalid CPU quota" and leaves cpu.max at "max"),
+        # while the single % applies.
+        lines.append(f"CPUQuota={quota}%")
+    if "cpu_weight" in res:
+        lines.append(f"CPUWeight={_esc(int(res['cpu_weight']))}")
+    return lines
+
+
 def _mount_source(slug: str, mount: dict) -> str:
     if "volume" in mount and "from" in mount:
         raise SpecError(f"mount names both volume and from: {mount}")
@@ -132,6 +180,39 @@ def _container_findings(slug: str, name: str, c: dict, spec: dict) -> list[str]:
     image = str(c.get("image", ""))
     if not image or ":" not in image or image.endswith(":latest"):
         out.append(f"{slug}/{name}: image must carry a pinned tag (:latest is a validation error)")
+    res = c.get("resources")
+    if res is not None:
+        if not isinstance(res, dict):
+            out.append(f"{slug}/{name}: resources must be a mapping")
+        else:
+            for key in res:
+                if key not in _RESOURCE_KEYS:
+                    out.append(
+                        f"{slug}/{name}: resources has unknown key {key!r} (allowed: {', '.join(_RESOURCE_KEYS)})"
+                    )
+            for key in ("memory_max", "memory_high", "memory_swap_max"):
+                if key in res and not _SIZE_RE.match(str(res[key])):
+                    out.append(
+                        f"{slug}/{name}: resources.{key} {res[key]!r} must be a size (e.g. 512MiB, 4GiB) or infinity"
+                    )
+            if (
+                "memory_high" in res
+                and "memory_max" in res
+                and _SIZE_RE.match(str(res["memory_high"]))
+                and _SIZE_RE.match(str(res["memory_max"]))
+                and _size_bytes(res["memory_high"]) > _size_bytes(res["memory_max"])
+            ):
+                out.append(f"{slug}/{name}: resources.memory_high must not exceed resources.memory_max")
+            if "cpus" in res:
+                v = res["cpus"]
+                if isinstance(v, bool) or not isinstance(v, (int, float)) or v <= 0 or int(round(float(v) * 100)) < 1:
+                    out.append(f"{slug}/{name}: resources.cpus must be a positive number of cores (min 0.01)")
+            if "cpu_weight" in res:
+                v = res["cpu_weight"]
+                if isinstance(v, bool) or not isinstance(v, int) or not 1 <= v <= 10000:
+                    out.append(f"{slug}/{name}: resources.cpu_weight must be an integer 1..10000")
+                if "cpus" in res:
+                    out.append(f"{slug}/{name}: resources sets both cpus and cpu_weight; pick one")
     return out
 
 
@@ -240,10 +321,12 @@ def render_container(slug: str, name: str, c: dict, spec: dict, relabel: bool = 
         lines.append("Type=oneshot")
         if c.get("start_timeout"):
             lines.append(f"TimeoutStartSec={_esc(c['start_timeout'])}")
+        lines.extend(_resource_lines(c))
     else:
         lines.append(f"Restart={_esc(c.get('restart') or 'on-failure')}")
         if c.get("start_timeout"):
             lines.append(f"TimeoutStartSec={_esc(c['start_timeout'])}")
+        lines.extend(_resource_lines(c))
         lines.append("")
         lines.append("[Install]")
         lines.append("WantedBy=default.target")

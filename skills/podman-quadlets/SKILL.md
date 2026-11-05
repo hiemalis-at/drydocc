@@ -202,6 +202,11 @@ Exec=<spec.exec>                           # only if non-empty
 [Service]
 Restart=<spec.restart or on-failure>
 TimeoutStartSec=<spec.start_timeout>       # only if set
+MemoryMax=<spec.resources.memory_max>       # the resources lines, fixed order, each only if its key is set:
+MemoryHigh=<spec.resources.memory_high>     #   memory_* render as plain bytes (4.5GiB -> 4831838208;
+MemorySwapMax=<spec.resources.memory_swap_max>  # infinity stays "infinity"); cpus renders as
+CPUQuota=<round(spec.resources.cpus*100)>%     #   CPUQuota=<round(cpus*100)>% (single %, see Rules), cpu_weight as
+CPUWeight=<spec.resources.cpu_weight>       #   CPUWeight=
 
 [Install]
 WantedBy=default.target
@@ -209,9 +214,9 @@ WantedBy=default.target
 
 A container with `oneshot: true` is started only by a job (§ "Jobs"), never
 at boot. Its `[Service]` section is `Type=oneshot` followed by the optional
-`TimeoutStartSec=` line, with no `Restart=` line, and it has **no `[Install]`
-section**. Everything in `[Unit]` and `[Container]` renders as for any other
-container.
+`TimeoutStartSec=` line and any `resources` lines, with no `Restart=` line,
+and it has **no `[Install]` section**. Everything in `[Unit]` and
+`[Container]` renders as for any other container.
 
 Keys are emitted in exactly the order above, and a key whose field is unset
 emits no line. That keeps the render byte-identical for documents that use
@@ -222,7 +227,12 @@ Rules:
   (`%%`). systemd expands `%` specifiers in unit files, and the quadlet
   generator passes these values into the service it generates, so an
   undoubled `date +%s` in `exec` would run as `date +<the user's shell>`. The
-  container still receives a single `%`.
+  container still receives a single `%`. The one exception is renderer-
+  generated syntax, not a document value: the `%` in `CPUQuota=<n>%` is the
+  directive's own percentage sign, and `CPUQuota`'s parser runs no specifier
+  expansion — it takes the sign literally, so `CPUQuota=50%%` is rejected as
+  an invalid quota and the quota is silently left unlimited, while
+  `CPUQuota=50%` applies. It therefore renders single, undoubled.
 - `depends_on` entries are rewritten `<dep>` → `<slug>-<dep>.service` for
   both `After=` and `Requires=`.
 - Every network unit the container joins is added to both `After=` and
@@ -233,6 +243,16 @@ Rules:
   quadlet key, because the quadlet generator in older podman releases still
   shipped by long-term-support distributions has no such key. Every
   generator accepts `PodmanArgs=`.
+- `resources` renders into `[Service]`, not into `PodmanArgs=--memory` etc.,
+  because the quadlet generator runs the container inside the service's own
+  cgroup: the unit-level lines bind the container (and any helper processes)
+  with one cgroup, show up in `systemctl --user show`, and apply to a running
+  unit on `daemon-reload` without a restart. Semantics: `MemoryHigh=` is the
+  soft limit (the kernel reclaims and throttles inside the cgroup),
+  `MemoryMax=` the hard one (OOM-kill inside the cgroup beyond it), and
+  `MemorySwapMax=0` keeps the container out of swap entirely — so on a node
+  sized so the declared limits sum below physical RAM, a burst degrades
+  predictably instead of swapping the host.
 - **Validation** (`/apply-use-case` and `/modify-use-case` refuse a document
   that breaks one, naming the container and the key; `/audit-use-case`
   reports it as a static invariant):
@@ -252,7 +272,20 @@ Rules:
     sets `ro: true`;
   - `subpath` is relative: no leading `/`, and no `..` component;
   - a `oneshot` container sets no `restart`, and no other container lists it
-    in `depends_on`. Nothing would ever start it for them.
+    in `depends_on`. Nothing would ever start it for them;
+  - `resources` is a mapping whose keys are limited to `memory_max`,
+    `memory_high`, `memory_swap_max`, `cpus`, `cpu_weight`;
+  - `memory_max`, `memory_high` and `memory_swap_max` are sizes
+    (e.g. `512MiB`, `4GiB`, plain bytes) or `infinity` — the renderer converts
+    them to plain bytes, because the rootless user manager rejects suffixed
+    values (`Invalid memory limit … Invalid argument`); when both
+    `memory_high` and `memory_max` are set, `memory_high` must not exceed
+    `memory_max`;
+  - `cpus` is a positive number of cores (minimum 0.01) and renders as
+    `CPUQuota=<round(cpus*100)>%` (single `%` — see the Rules list);
+    `cpu_weight` is an integer 1..10000 and renders as `CPUWeight=`; `cpus`
+    and `cpu_weight` are mutually exclusive — quota caps, weight only
+    shares under contention.
 - `<source>` of a mount is:
   - `/var/lib/drydocc/volumes/<slug>/<vol>` for `volume: <vol>`;
   - `/var/lib/drydocc/volumes/<owner-slug>/<vol>` for `from: <owner-slug>/<vol>`;

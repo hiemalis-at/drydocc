@@ -8,6 +8,25 @@ version is 0, a minor release may change conventions or the command surface.
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-11-05
+
+### Use-case specs
+
+- **Per-container `resources:` in the use-case spec.** A container may now
+  declare `resources:` with any subset of `memory_max`, `memory_high`,
+  `memory_swap_max`, `cpus` and `cpu_weight`, rendered into the quadlet's
+  `[Service]` section as `MemoryMax=`/`MemoryHigh=`/`MemorySwapMax=`/
+  `CPUQuota=`/`CPUWeight=`: memory sizes render as plain bytes (`4.5GiB` ->
+  `4831838208`), `cpus: 2.5` renders as `CPUQuota=250%` (single `%` — the
+  quota parser takes it literally), and `infinity`
+  passes through. A burst then degrades inside the container's own cgroup —
+  throttled at the soft limit, OOM-killed at the hard one, optionally never
+  swapping — instead of driving the host into swap. Validation refuses a
+  document with an unknown key, a non-size memory value, `memory_high` above
+  `memory_max`, `cpus` under 0.01 cores, `cpu_weight` outside 1..10000, or
+  `cpus` and `cpu_weight` set together, naming the container and the key.
+  See `podman-quadlets` § "Render from spec". — thanks @max-win-at
+
 ## [0.5.0] - 2026-10-24
 
 ### Agent tooling
