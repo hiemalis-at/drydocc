@@ -28,8 +28,10 @@ run (see *Lab runs* below), check `git remote -v` before anything else:
 
 2. **Append-only journal.** Every state-changing action appends an entry
    under `nodes/<self>/journal/`. Same commit as the change. Even failures
-   journal (`outcome: failed`). See the `conventions` skill's
-   `references/journal.md`.
+   journal (`outcome: failed`). The one sanctioned rewrite is
+   `/compact-journal`'s body compaction: frontmatter and filenames stay
+   verbatim, the full original stays in git history. See the `conventions`
+   skill's `references/journal.md`.
 
 3. **Secrets are not git data.** Values live in the admin's KeePass + on the
    node at `/etc/drydocc/secrets/<slug>.env` (chmod 600). Only manifests
@@ -41,23 +43,17 @@ run (see *Lab runs* below), check `git remote -v` before anything else:
    matching reference in the `conventions` skill first.
 
 5. **Distro-agnosticism.** Generic prose — the base repo, `docs/`, SKILL.md
-   bodies, and non-recipe references — never names a package manager, firewall
-   tool, init system, or MAC framework, neither as a command nor as a schema
-   field name (`hardening.firewall`, never `hardening.<tool>`). `system_facts`
-   values are an **open vocabulary**: any dialect a live probe returns is
-   legal to record, and supporting a new one must never require editing the
-   generic layer.
-
-   Concrete syntax lives **only** in a workflow skill's
-   `references/*-recipes.md`, where every section is an **outcome contract**
-   — goal, the `system_facts` key + probe that selects the dialect, how to
-   derive one nobody has written down, **mandatory verification**, and a
-   record step — never a per-distro command list. Its dialect table is
-   evidence of what has been verified on a real node, not the supported list.
-   Refusal turns on a missing **capability**, never on what a box calls
-   itself; the one hard gate is `system_facts.service_manager: systemd`,
-   because quadlets are a systemd feature. Full contract:
-   `skills/conventions/references/distro-agnosticism.md`.
+   bodies, non-recipe references — never names a package manager, firewall
+   tool, init system, or MAC framework, not even as a schema field name
+   (`hardening.firewall`, never `hardening.<tool>`). Concrete syntax lives
+   **only** in a workflow skill's `references/*-recipes.md`, as **outcome
+   contracts** with mandatory verification — never per-distro command lists;
+   their dialect tables are evidence, not the supported list. `system_facts`
+   values are an **open vocabulary**: record any dialect a live probe returns;
+   supporting a new one never edits the generic layer. Refusal turns on a
+   missing **capability**, never on what a box calls itself; the one hard gate
+   is `system_facts.service_manager: systemd` (quadlets are a systemd feature).
+   Full contract: `skills/conventions/references/distro-agnosticism.md`.
 
 6. **One fact, one level.** `AGENTS.md` holds invariants + routing; SKILL.md
    bodies hold procedure; `references/` hold exact commands and schemas. Each

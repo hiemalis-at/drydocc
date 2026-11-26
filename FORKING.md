@@ -338,7 +338,9 @@ working copy as well.
   committed as `<slug>.secrets.yaml`. Values live in KeePassXC and on the
   node at `/etc/drydocc/secrets/<slug>.env`.
 - **The journal** under each `nodes/<node>/journal/` is the audit trail. It
-  is append-only — don't edit it manually.
+  is append-only — don't edit it manually. `/compact-journal` is the one
+  sanctioned rewrite: it shrinks verbose bodies, keeps frontmatter verbatim,
+  and leaves every original recoverable from git history.
 - **Every command journals and commits**, including when it fails. If a run
   breaks, the fork already records how far it got; fix the cause and run the
   same command again.

@@ -8,6 +8,83 @@ version is 0, a minor release may change conventions or the command surface.
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-11-26
+
+### Commands
+
+- **`/compact-journal` — sanctioned journal body compaction.** Audits a node's
+  journal for ambiguities, contradictions and outdated statements, then
+  compacts verbose entry bodies in place: frontmatter and filenames stay
+  verbatim (one added `compacted:` date), every original stays recoverable
+  from git history, and the journal's derived queries answer unchanged.
+  Resolution annotations cite the settling entry by filename; unsettled items
+  are reported for a later on-node audit, never acted on. Repo-only — no SSH
+  even from the client surface. The journal convention gains § Compaction,
+  `commit_after: self`, and an open `<harness>/<model>` actor vocabulary;
+  invariant 2's append-only rule carries the one exception. Proven on three
+  live nodes of a fork before generalization. — thanks @max-win-at
+
+### Guidance and conventions
+
+- **The distro-agnosticism contract names its exemptions.** Helper sections
+  (probes, connection models, cut-over routines) and report-only posture items
+  are now defined beside the outcome contract instead of leaving "every
+  section" to interpretation; the fact-vocabulary marker region is documented
+  where the blocklist lives; and the blocklist gained the non-systemd init
+  systems and the firewall/package-manager aliases it had missed. The onboard
+  inventory probe's service-manager candidates are Observed-dialects evidence
+  like every other dialect, and `/node-notify` records its verified HTTPS
+  client the same way. `native-services.md` is now
+  `native-services-recipes.md`, matching the rule that concrete syntax lives
+  only in recipe files.
+- **One home for the fallback-port default.** The `ssh_fallback_port` default
+  is stated in the node-profile schema; the architecture document, the
+  bootstrap scaffold, and the hardening baseline refer to it instead of
+  restating it.
+- **Leaner always-in-context invariant.** `AGENTS.md` invariant 5 states the
+  same distro-agnosticism rules in fewer words and links the full contract.
+
+### Use-case specs
+
+- **Images built on the node, from a Containerfile kept in the fork.** A
+  use-case may declare `spec.images.<name>` — `{ context: <files volume>,
+  file: <relative path, default Containerfile>, memory: <optional build cap> }`
+  — and a container then sets `build: <name>` in place of `image:`. The
+  renderer emits one `<slug>-<name>.build` quadlet per image, tagged
+  `localhost/drydocc/<slug>-<name>:<ctx>` where `<ctx>` is a digest of the
+  build context, so any change to the Containerfile or its context changes
+  the render and `/modify-use-case` and `/audit-use-case` see it. Quadlet
+  starts the build before the container that needs it, and only then. The
+  reproducibility contract moves from the tag to the Containerfile: every
+  `FROM` — and every image a `COPY`/`ADD --from=` or `RUN --mount=…,from=`
+  names — pins a digest or names an earlier stage, which validation refuses
+  to accept otherwise, together with a `context` that is not a files volume,
+  a non-relative `file`, a container setting both `image` and `build`, and a
+  `build` naming no declared image. Frontmatter gains the matching `images:`
+  summary list. Documents that build nothing render byte-identically. See
+  `podman-quadlets` § "Built images". — thanks @max-win-at
+- **`isolate:` on a network.** A network may set `isolate: true` (no traffic
+  to other isolated networks) or `isolate: strict` (none to any other network
+  on the node), rendered as `Options=isolate=…` on the network unit. Without
+  it, podman routes between bridge networks by default, so a container on one
+  network reaches another network's containers by IP. Outbound internet is
+  unaffected either way. See `podman-quadlets` § "Render from spec".
+  — thanks @max-win-at
+- **A shared volume may name the use-cases that write to it.** A volume
+  declared `shared: true` is mounted read-only by other use-cases; the owner
+  may now add `writers: [<slug>, …]` to let those slugs mount it without
+  `ro`. Use it when one service provisions data another owns — an account
+  file, a mailbox list — instead of an unmanaged extra mount. A listed writer
+  edits only the files the owner's `## Runbook` names as its contract, keeps
+  the owner's modes and ownership, and coordinates with the owner's own
+  writers; the owner's audit manifest names it on those config surfaces.
+  Validation reads the owner's document to decide: the mount must name
+  `<owner>/<volume>`, the owner must declare that volume `shared: true`, and
+  the read-write form needs this use-case in its `writers`. An owner document
+  that cannot be read is a finding, never a pass. Documents that declare no
+  `writers` render byte-identically. See `podman-quadlets` § "Shared
+  volumes". — thanks @max-win-at
+
 ## [0.6.0] - 2026-11-05
 
 ### Use-case specs

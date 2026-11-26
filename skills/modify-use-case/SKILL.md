@@ -64,7 +64,8 @@ metadata:
    - Body sections to extend (`Runbook` usually).
    - Whether `has_secrets` flips (new secrets manifest needed or old one
      to retire).
-   - Whether an image tag is being bumped (triggers `podman pull`).
+   - Whether an image tag is being bumped (triggers `podman pull`), or a
+     built image's context changes (triggers a build).
    - Which jobs (`spec.jobs`) the mutation adds, changes or drops.
    - Whether a files tree (`<slug>.files/<vol>/`) changes. The mutation may be
      nothing but such a change (an edited virtual host), with no frontmatter
@@ -169,6 +170,15 @@ metadata:
       When `on_client`, run the pull via `node-exec` lingering
       (`dd-<slug>-pull`) so a large layer download survives an SSH
       disconnect.
+    - Built image's `.build` unit added or changed (its context tree or
+      `file` changed, so its `ImageTag=` changed; `podman-quadlets` §
+      "Built images") → after the files-volume re-sync below and the
+      `daemon-reload`, `systemctl --user restart <slug>-<image>-build.service`
+      (`restart` builds whether or not the generated service is still active;
+      podman 5.8 renders it `Type=oneshot` without `RemainAfterExit`) and check
+      `podman image exists` for the new tag. Then restart (or
+      start) every container whose `build` names it. A failed build leaves
+      the running containers on the previous image: halt and report it.
     - Secrets manifest changed → re-resolve each key via `secrets`
       (env-var-first) to rewrite the env file, then restart every container
       that consumes it.

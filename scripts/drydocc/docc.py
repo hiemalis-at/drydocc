@@ -143,6 +143,11 @@ def diff_quadlets(node: str, slug: str, surface: str, relabel: bool = False) -> 
     }
 
 
+def is_quadlet_unit_name(slug: str, name: str) -> bool:
+    """Whether ``name`` is a quadlet file this use-case may own on the node."""
+    return re.fullmatch(rf"{re.escape(slug)}-[a-z0-9][a-z0-9-]*\.(container|network|build)", name) is not None
+
+
 def write_quadlets(node: str, slug: str, surface: str, digest: str, relabel: bool = False) -> dict:
     """Write the confirmed render's changed and added quadlets to the node.
 
@@ -157,10 +162,9 @@ def write_quadlets(node: str, slug: str, surface: str, digest: str, relabel: boo
             f"the render changed since it was confirmed (expected {digest}, now {now}): "
             "render and confirm again"
         )
-    unit = re.compile(rf"^{re.escape(slug)}-[a-z0-9][a-z0-9-]*\.(container|network)$")
     for name in rendered:
-        if not unit.match(name):
-            raise OpError(f"refusing to write {name!r}: not a <slug>-<name>.container/.network file")
+        if not is_quadlet_unit_name(slug, name):
+            raise OpError(f"refusing to write {name!r}: not a <slug>-<name>.container/.network/.build file")
     conn = _connection(node, surface)
     classes = render.diff_rendered(rendered, audit_probe.read_quadlets(slug, conn))
     by_class = lambda c: sorted(n for n, e in classes.items() if e["class"] == c)

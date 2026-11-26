@@ -29,7 +29,7 @@ Refer instead to the fact: *"the node's firewall tool
 ## Rule 2 — recipe sections are outcome contracts
 
 Concrete syntax lives only in a workflow skill's `references/*-recipes.md`. Every
-section there takes this shape:
+outcome section there — one that carries a **Goal.** — takes this shape:
 
 ```markdown
 ## <Outcome, stated as an end state — never a tool name>
@@ -57,10 +57,22 @@ append the verified idiom to Observed dialects below.
 |---|---|---|---|
 ```
 
-All five parts are mandatory. A section missing **Verification** is incomplete and
-must not ship: verification is the entire safety argument for letting an agent
-derive commands against a live box. It converts guessing into a bounded loop —
-propose, verify, record, or refuse.
+All five parts are mandatory in an outcome section. A section missing
+**Verification** is incomplete and must not ship: verification is the entire
+safety argument for letting an agent derive commands against a live box. It
+converts guessing into a bounded loop — propose, verify, record, or refuse.
+
+Helper sections — contents, prerequisites, probes, connection models, cut-over
+routines, failure handling — carry no **Goal.** and are exempt: they support
+outcome sections rather than state an end state.
+
+Report-only outcomes — posture items that read and compare but never change
+state and never derive a dialect — carry **Report-only.** beside their
+**Goal.** and are exempt from the other parts: there is no dialect to select
+and no state to record. Their probe and finding rules are the contract, and
+the marker makes the exemption a declared, reviewable choice rather than an
+accident. A tool can enforce the contract by checking that every section with
+a Goal carries the other parts or the Report-only marker.
 
 ## Rule 3 — Observed dialects are evidence, not a supported list
 
@@ -113,6 +125,12 @@ preceded by the block comment that governs every one of them:
 
 Adding support for a new dialect must never require editing the generic layer. If
 it does, the fact was modelled wrongly.
+
+When a schema reference documents common fact values in prose or YAML outside a
+node profile, wrap that region in `<!-- fact-vocabulary -->` …
+`<!-- /fact-vocabulary -->` markers. Inside them, dialect names are data about
+the vocabulary, not instruction — the one place besides an Observed dialects
+table where the generic layer may show them.
 
 ## Rule 6 — a fact earns its slot
 
@@ -171,7 +189,7 @@ rule `/remove-use-case` will later fail to clean up.
 **Record.** `system_facts.firewall.*`, the journal entry, and the table below.
 
 ### Observed dialects — evidence, not the supported list
-| tool | rule_model | add | read back | verified on |
+| tool | rule_model | add | read back | verified on (illustrative) |
 |---|---|---|---|---|
 | ufw | rule-list | `ufw allow <port>/tcp comment '<tag>'` | `ufw status numbered` | test-02, 2026-06 |
 | firewalld | zone | rich rule carrying `log prefix="<tag> "` | `firewall-cmd --list-rich-rules` | test-02, 2026-06 |
@@ -181,7 +199,8 @@ rule `/remove-use-case` will later fail to clean up.
 
 Machine-readable: the fenced block below holds one term per line, matched case-insensitively on word boundaries. Hits are
 permitted only inside an `### Observed dialects` table (from that heading to the
-next heading of the same or higher level) and inside this file.
+next heading of the same or higher level), inside a `<!-- fact-vocabulary -->` …
+`<!-- /fact-vocabulary -->` region (Rule 5), and inside this file.
 
 ```blocklist
 ubuntu
@@ -206,11 +225,21 @@ zypper
 pacman
 apk
 rpm
+aptitude
+microdnf
 ufw
 firewalld
 firewall-cmd
+firewall-offline-cmd
 nftables
+nft
 iptables
+ip6tables
+openrc
+rc-service
+rc-update
+runit
+sysvinit
 selinux
 semanage
 setsebool

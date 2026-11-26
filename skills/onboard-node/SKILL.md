@@ -176,7 +176,7 @@ it stopped.
 
 Discovery and scaffolding are read-only against the box: clustering uses data
 Phase 3 already collected, and the per-unit probes triage adds
-(`references/native-services.md` § "Probes") only read. The sole writes are
+(`references/native-services-recipes.md` § "Probes") only read. The sole writes are
 in-memory repo deltas. They run before hardening so that every use-case slug
 exists by the time the firewall reconcile needs to tag a preserved rule with
 its owner.
@@ -187,7 +187,7 @@ its owner.
    shared prefix → singleton).
 
    Host-native services are not clustered. They are triaged per
-   `references/native-services.md` into its three outcomes;
+   `references/native-services-recipes.md` into its three outcomes;
    `references/onboard-recipes.md` § "Service discovery rules" says, per
    outcome, which produce a document and how it is accepted.
    `--skip-services` skips all of it.

@@ -17,7 +17,7 @@ conventions all use-case quadlets must follow.
 
 Quadlets exist only on the node — never in git:
 
-`~/.config/containers/systemd/<slug>-<name>.{container,network}`
+`~/.config/containers/systemd/<slug>-<name>.{container,network,build}`
 
 The source of truth is the `spec:` block in
 `nodes/<node>/use-cases/<slug>.md`. The render function below is a pure
@@ -33,6 +33,7 @@ ownership obvious in `ls`.
   runtime (systemd derives the service name).
 - Network: `<slug>-<purpose>.network` → unit `<slug>-<purpose>-network.service`.
 - Volume: `<slug>-<volume>.volume` → unit `<slug>-<volume>-volume.service`.
+- Built image: `<slug>-<image>.build` → unit `<slug>-<image>-build.service`.
 
 Names listed in the use-case doc frontmatter (`containers:`, `networks:`,
 `volumes:`) MUST match these patterns.
@@ -180,7 +181,7 @@ After=<slug>-<network>-network.service <slug>-<dep>.service ...
 Requires=<slug>-<network>-network.service <slug>-<dep>.service ...
 
 [Container]
-Image=<spec.image>
+Image=<spec.image>                         # or <slug>-<spec.build>.build for a built image
 ContainerName=<slug>-<container>
 Network=<slug>-<net>.network               # one per spec.network / spec.networks entry; Network=host for network: host
 HostName=<spec.hostname>                   # only if set
@@ -239,6 +240,11 @@ Rules:
   `Requires=`, in declared order, so the container will not start before its
   networks exist. A container with neither `network` nor `networks` joins
   `<slug>-net`. `network: host` adds no network unit.
+- Podman bridge networks route to one another by default: a container on one
+  network reaches another network's containers **by IP**, even with no DNS
+  between them. A network whose members must not reach the rest of the node
+  sets `isolate: strict` (no traffic to any other network) or `isolate: true`
+  (none to other `isolate: true` networks). Outbound internet is unaffected.
 - `entrypoint` and `aliases` go through `PodmanArgs=`, not through a dedicated
   quadlet key, because the quadlet generator in older podman releases still
   shipped by long-term-support distributions has no such key. Every
@@ -264,12 +270,21 @@ Rules:
   - `cap_add` entries are bare capability names (`MKNOD`, not `CAP_MKNOD`),
     upper case;
   - `start_timeout` is a positive integer number of seconds;
+  - a container sets exactly one of `image` and `build`. `image` carries a
+    pinned tag (`:latest` is refused); `build` names a key of `spec.images`;
+  - an image's `context` names a files volume (`source: files`) of this
+    document, and its `file` follows the `subpath` rule;
   - a `ports` entry is `[<addr>:]<host>:<container>/<proto>` with single
     ports. A `listens` entry is `<port>/<proto>` or `<lo>-<hi>/<proto>`;
   - a mount names exactly one of `volume` (a key of this document's
     `spec.volumes`) or `from` (`<owner-slug>/<vol>`, § "Shared volumes");
   - a mount of a files volume (§ "Files volumes"), and every `from` mount,
-    sets `ro: true`;
+    sets `ro: true`. The one exception is a `from` mount by a use-case the
+    owner lists in that volume's `writers` (§ "Shared volumes"). Validation
+    reads the owner's document — the sibling `<owner-slug>.md` in the same
+    `use-cases/` directory — to decide: the volume must be declared there
+    `shared: true`, and the read-write form needs this use-case's slug in its
+    `writers`. An owner that cannot be read is a finding, never a pass;
   - `subpath` is relative: no leading `/`, and no `..` component;
   - a `oneshot` container sets no `restart`, and no other container lists it
     in `depends_on`. Nothing would ever start it for them;
@@ -322,6 +337,62 @@ Rules:
   apply procedure ensures the env file exists before starting the unit
   (via the `secrets` handshake).
 
+### `<slug>-<image>.build` (one per `spec.images.*`)
+
+```ini
+[Unit]
+Description=<slug>/<image> image (drydocc)
+
+[Build]
+ImageTag=localhost/drydocc/<slug>-<image>:<ctx>
+File=/var/lib/drydocc/volumes/<slug>/<context>/<file or Containerfile>
+SetWorkingDirectory=/var/lib/drydocc/volumes/<slug>/<context>
+Pull=missing
+PodmanArgs=--memory=<spec.memory>          # only if set, e.g. 2g
+```
+
+It has no `[Install]` section: a container whose `Image=` names the `.build`
+file makes quadlet start the build first, so the image is built when, and only
+when, a container needs it. Rules are in § "Built images" below.
+
+### Built images
+
+An image a use-case builds on the node, rather than pulls (`spec.images`, the
+schema in `conventions` → `references/use-case-doc.md`). Use it when no
+published image carries what a container needs, for example one service plus
+a daemon from another image.
+
+- **The Containerfile is the pin.** Its build context is a files volume of
+  the same document, so it lives in git under
+  `<slug>.files/<context>/`. Every `FROM` pins a digest (`@sha256:`), or
+  names an earlier stage of the same file, or `scratch`. The same holds for
+  every image a `COPY`/`ADD --from=` or a `RUN --mount=…,from=` names (a
+  numeric stage index counts as a stage). `validate_use_case` refuses
+  anything else. Whatever the Containerfile fetches during the build
+  is pinned too: an exact package version (derived from the pinned base where
+  it must match a package already in it), a release URL with its checksum,
+  never an unpinned "latest". A pin that has vanished upstream must make the
+  build fail, not fall back to another version.
+- **The tag follows the context.** `<ctx>` is the first 12 hex digits of a
+  sha256 over the context tree (sorted relative paths and file bytes),
+  computed from the fork by the renderer. Changing any file in the context
+  changes the `.build` unit and every container that uses it, which is how
+  `/modify-use-case` and `/audit-use-case` see the change. An unchanged
+  context renders identically, and podman's layer cache makes a rebuild at
+  boot cheap.
+- **Building needs what the Containerfile fetches.** The build runs as
+  `doccap` under rootless podman, with network access unless the
+  Containerfile needs none. A `FROM` image that is already present (the
+  same digest another container of the node runs) is not pulled again
+  (`Pull=missing`).
+- **Cap the build's memory** with the image's `memory` (`2g`, `512m`). A
+  package manager that misbehaves on a flaky mirror can otherwise exhaust
+  the node during a build, which runs outside any container limit of the
+  use-case.
+- **Currency is the base's.** A built image is current exactly when its
+  `FROM` digests are. A digest never moves, so updating the base is a
+  `/modify-use-case` that edits the `FROM` line.
+
 ### `<slug>-<network>.network` (one per `spec.networks.*`)
 
 ```ini
@@ -332,6 +403,7 @@ Description=<slug>/<network> (drydocc)
 NetworkName=<slug>-<network>
 Internal=true                              # only if spec.internal == true
 Subnet=<spec.subnet>                       # only if set, a CIDR
+Options=isolate=<true|strict>              # only if spec.isolate is true or strict
 
 [Install]
 WantedBy=default.target
@@ -418,11 +490,22 @@ Who runs it:
 A volume with `shared: true` may be mounted read-only by other use-cases on
 the same node. Typical use: certificates one use-case obtains and others
 serve. The owner declares and writes it, and a consumer mounts it as
-`{ from: <owner-slug>/<vol>, target: <path>, ro: true }`. Rules:
+`{ from: <owner-slug>/<vol>, target: <path>, ro: true }`.
+
+The owner may also name use-cases that **write** to it, with
+`writers: [<consumer-slug>, …]` next to `shared: true`. Typical use: a
+provisioning service that edits the account files of the service owning the
+volume. A listed writer mounts it without `ro`. Rules:
 
 - the consumer lists the owner in its top-level `depends_on`, and the owner
   must be `active` before the consumer is applied;
-- consumers only ever read; write access across use-cases is out of scope;
+- consumers only read, unless the owner lists them in `writers`. A `writers`
+  entry is a slug, never a wildcard. A writer edits only the files the
+  owner's `## Runbook` names as its contract, keeps the owner's file modes and
+  ownership, and coordinates with the owner's own writers (the owner's lock
+  convention, atomic replaces). The owner's audit manifest lists those files
+  as config surfaces whose note names the writer, because they change by
+  design;
 - on a node whose `system_facts.mac_framework` relabels bind mounts, a
   shared volume uses the shared relabel option (`z`) on every mount of it,
   the owner's included. A private relabel (`Z`) by either side would lock

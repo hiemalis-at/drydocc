@@ -204,7 +204,8 @@ fi
 # A file without a final newline gets one, so the closing marker always
 # starts its own line and never swallows the rest of the output.
 QUADLET_DUMP = r"""for f in ~/.config/containers/systemd/"$SLUG"-*.container \
-         ~/.config/containers/systemd/"$SLUG"-*.network; do
+         ~/.config/containers/systemd/"$SLUG"-*.network \
+         ~/.config/containers/systemd/"$SLUG"-*.build; do
   if [ -f "$f" ]; then
     echo "quadlet=$f"
     echo "---8<---"
@@ -347,7 +348,7 @@ def run(inputs: ProbeInputs, conn: Connection | None = None) -> dict:
 
 
 def read_quadlets(slug: str, conn: Connection | None = None) -> dict[str, str]:
-    """The node's current ``<slug>-*.{container,network}`` quadlets, as
+    """The node's current ``<slug>-*.{container,network,build}`` quadlets, as
     ``{filename: text}`` — the probe's own quadlet section, run alone."""
     script = f"SLUG={shquote(slug)}\n" + QUADLET_DUMP
     quadlets = parse_probe(run_script(script, conn).stdout)["quadlets"]

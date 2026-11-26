@@ -70,8 +70,9 @@ metadata:
    seal"). Note, but do not refuse on:
    - a declared volume with no entry in the seal (never backed up, or backed
      up under an older manifest that excluded it);
-   - a pinned image tag in `spec.containers.*.image` that differs from the
-     seal's `images.<container>` — call this out explicitly (a database
+   - a pinned image tag in `spec.containers.*.image` (for a container that
+     sets `build`, the rendered `.build` unit's `ImageTag=`) that differs from
+     the seal's `images.<container>` — call this out explicitly (a database
      engine's on-disk format changing across a major version is the classic
      reason this matters) and let the admin confirm before proceeding
      `[decision: restore.image-mismatch]`.

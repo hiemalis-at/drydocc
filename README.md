@@ -209,6 +209,7 @@ and `.agents/skills`, and you invoke them as `/<name>`.
 | Operations | [`/node-maintenance`](skills/node-maintenance/SKILL.md) | Recurring upkeep derived from the node's own inventory, with per-container telemetry baselines and a security audit against the node's own baseline |
 | | [`/node-notify`](skills/node-notify/SKILL.md) | Optional ntfy push alerts: failed runs, anomalies, a node gone silent |
 | | [`/continue-last-command`](skills/continue-last-command/SKILL.md) | Resumes a run that paused for a secret, or that the agent itself dropped |
+| | [`/compact-journal`](skills/compact-journal/SKILL.md) | Audits a node's journal and compacts verbose entry bodies; frontmatter stays verbatim, originals stay in git history |
 | Lab | [`/lab`](skills/lab/SKILL.md) | Throwaway VMs for scenario tests and prototypes, and replay-verified runbooks for real hardware |
 | Building blocks | [`conventions`](skills/conventions/SKILL.md) | The authoritative schemas for every file under `nodes/` |
 | | [`node-context`](skills/node-context/SKILL.md) | Binds which node a run acts on, and refuses writes outside it |

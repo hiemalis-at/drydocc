@@ -46,7 +46,7 @@ per-tool commands.
 - **Firewall enabled**: the active firewall tool reports enabled/running.
 - **Default deny inbound**: All unsolicited inbound traffic is dropped by default.
 - **Explicit inbound rules**: Only the following ports are open:
-  - **`ssh_fallback_port`** (default `42022`) — Fallback SSH for `doccap`.
+  - **`ssh_fallback_port`** — Fallback SSH for `doccap` (the port and its default are defined above and in `node.yaml`).
   - **Ports declared by active use-cases** — For each use-case with `status: active`, the ports listed in the use-case document's `ports` field are opened via the node's firewall tool. Example: `nextcloud` declares `["443/tcp", "3478/udp"]`, so a rule allows those.
   - **Tagged rules on adopted nodes** — On an adopted node, tagged rules may also exist for `status: planned` use-cases — `/onboard-node`'s adoption variant pre-allows the ports a live service already depends on, tagged with the slug that will own them once `/apply-use-case` runs. An untagged rule belongs to no use-case and is reported as drift.
   - Tailscale's `tailscale0` interface is always allowed for full Tailscale traffic.

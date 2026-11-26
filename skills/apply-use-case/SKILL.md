@@ -359,10 +359,25 @@ from scratch.
    podman pull <pinned-image>   # once per spec.containers.*.image
    ```
 
-   When `on_client`, run each as `NODE_RUN_LINGER` (`dd-<slug>-pull`) so a
-   dropped SSH connection cannot abort a large download. If any pull fails, halt
-   here and report which image: on an adoption or rebuild run nothing has been
-   stopped yet, so the box is still exactly as it was.
+   A use-case that builds an image (`spec.images`, `podman-quadlets` §
+   "Built images") pulls each digest its Containerfile's `FROM` lines name,
+   and builds here too, so a broken Containerfile fails before the cut-over.
+   Sync the context's files volume first (the step-7 sync, run early for that
+   volume), then build exactly what the rendered `.build` unit would. Its
+   tag is the unit's `ImageTag=`, so the unit at bring-up finds every layer
+   cached:
+
+   ```bash
+   podman pull <FROM digest>    # once per FROM that is not a stage name or scratch
+   podman build --pull=missing -t localhost/drydocc/<slug>-<image>:<ctx> \
+     -f /var/lib/drydocc/volumes/<slug>/<context>/<file> /var/lib/drydocc/volumes/<slug>/<context>
+   ```
+
+   When `on_client`, run each as `NODE_RUN_LINGER` (`dd-<slug>-pull`, and
+   `dd-<slug>-build` for a build) so a dropped SSH connection cannot abort a
+   large download. If any pull or build fails, halt here and report which
+   image: on an adoption or rebuild run nothing has been stopped yet, so the
+   box is still exactly as it was.
 
 6. **Cut-over** (adoption runs only — **skipped entirely** on a rebuild run;
    there is nothing legacy to stop, rename, or disable), in this order:

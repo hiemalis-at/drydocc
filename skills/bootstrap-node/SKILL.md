@@ -122,7 +122,8 @@ it stopped.
 4. Ask the provisioning **source**: `running` (an already-reachable box) or
    `vm` (provision a qemu VM first). `[decision: bootstrap.source]`
 5. Scaffold `nodes/<slug>/` if absent: write a `node.yaml` stub
-   (`name: <slug>`, `doccap_user: doccap`, `ssh_fallback_port: 42022`,
+   (`name: <slug>`, `doccap_user: doccap`, `ssh_fallback_port:` the default
+   declared in `conventions/references/node-profile.md`,
    `tailscale_hostname: <slug>`, `roles:` parsed from the description,
    `provisioning.source: <source>`, `hardening.*: unknown`,
    `created: <today>`, `last_bootstrapped: null`); also write a

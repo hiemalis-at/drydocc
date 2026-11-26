@@ -99,6 +99,10 @@ before anything runs:
 **Goal.** The client reaches the replacement box under the node's name without
 ever trusting a changed host key the admin cannot account for.
 
+**Fact.** `node.yaml:identity.host_key_fingerprint` records the trusted key;
+the probe in step 2 reads what the box offers now. No dialect of its own —
+both tools are the target shape's.
+
 A rebuilt or replaced box answering on the same tailnet name or address
 presents a new SSH host key, so the client's strict host-key check fails on
 the first `node-exec` call. That failure looks identical to a man-in-the-middle.
@@ -126,8 +130,10 @@ Treat it as one until the admin says otherwise.
    ```
 
 **Verification.** The next `node-exec` call succeeds, and step 6's probe emits
-`node_name=<node>`. `/bootstrap-node` then records the new fingerprint into
-`identity`. Journal both fingerprints and the admin's confirmation.
+`node_name=<node>`.
+
+**Record.** Journal both fingerprints and the admin's confirmation;
+`/bootstrap-node` records the new fingerprint into `identity`.
 
 The tailnet has the same problem. The dead device may still hold
 `<tailscale_hostname>`, so the replacement joins as a suffixed name and the
@@ -265,12 +271,19 @@ never a default restore.
 **Goal.** Every pinned image of a recoverable use-case runs on the replacement
 box's architecture before the use-case is attempted.
 
+**Fact.** `node.yaml:arch` before this run versus the value bootstrap records
+during it, and the pinned references in the declarations; the registry's
+platform list is the probe. No dialect of its own.
+
 1. Compare `node.yaml:arch` before this run with the value bootstrap recorded
    during it. Normalise before comparing, never refuse on spelling:
    `x86_64` → `amd64`, `aarch64` → `arm64`, `armv7l` → `arm/v7`. A match means
    stop here.
-2. For each `spec.containers.*.image`, ask the registry which platforms the
-   pinned tag offers:
+2. For each `spec.containers.*.image`, and for each digest a built image's
+   Containerfile names in a `FROM` line (`podman-quadlets` § "Built
+   images"), ask the registry which platforms the pinned reference offers.
+   A built image itself is rebuilt on the new box, so only its bases need
+   the platform:
 
    ```bash
    podman manifest inspect <image>
@@ -288,6 +301,10 @@ box's architecture before the use-case is attempted.
 **Verification.** The new platform is in the list, or the pulled image reports
 it. Anything else blocks the use-case, and the report names the image and the
 platforms it does offer.
+
+**Record.** The recovery report names each blocked image and the platforms it
+offers, and carries the data-portability note below for every backed-up
+use-case when the platform changed; the run journals the comparison.
 
 **Data portability.** File data crosses architectures unchanged. Some
 application stores do not: a database engine's on-disk format can be tied

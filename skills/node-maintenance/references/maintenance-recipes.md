@@ -383,6 +383,16 @@ Applies to every container declared by an active use-case. The declaration
 pins a tag, and a pinned tag is not immutable — upstreams rebuild tags for
 security fixes, which is the entire reason this item exists.
 
+A container that sets `build` (a locally built image, `podman-quadlets` §
+"Built images") is checked through its Containerfile instead. Each `FROM`
+pins a digest, and a digest never moves, so such an image is `current` by
+construction and this item never pulls or rebuilds it. Moving the base to a
+newer release is a `/modify-use-case` that edits the `FROM` line. Being
+current by construction does not mean being up to date: report each
+digest-pinned base (a `FROM`, or an `image:` pinned by `@sha256:`) as
+**needs a manual check against upstream releases**, never as `current`,
+because comparing a digest reference with itself always matches.
+
 1. **Resolve what is running.** For each declared image reference, read the
    local digest:
 
@@ -677,6 +687,8 @@ now: the firewall is enforcing, fail2ban is running, the effective sshd
 config and every drydocc kernel key match the baseline, root holds no
 authorized key, and no link-local name responder answers beyond loopback.
 
+**Report-only.**
+
 No dialect of its own. The probe emits the same `sshd_*`, `root_akeys`,
 `responder`, `sysctl_*`, `kernel_dropin` and `ts_advertises_routes` keys that
 `onboard-node/references/onboard-recipes.md` § "Inventory probes" defines,
@@ -694,6 +706,8 @@ writes `node.yaml:hardening`.
 
 **Goal.** Nobody can act as root or log in in a way the baseline does not
 know about.
+
+**Report-only.**
 
 No dialect. The account and sudo databases are read through their own tools
 (`getent`, `visudo`), never by parsing a file whose location could differ.
@@ -721,6 +735,8 @@ account the scan flagged.
 
 **Goal.** The set of setuid and setgid files, and the set of world-writable
 paths, is the one the admin last accepted.
+
+**Report-only.**
 
 No dialect. Scan every **local, block-backed** filesystem: `/` and every
 other mount point the mount table backs with a local block device, each
@@ -758,6 +774,8 @@ changed is `file-integrity-verified`'s job.
 **Goal.** Every scheduled job on the node is either the framework's own or
 one the admin has already seen.
 
+**Report-only.**
+
 **Fact.** None. The scheduler's own tools are asked, never their spool
 directories, since where a scheduler keeps its spool varies:
 
@@ -791,6 +809,8 @@ emits `persist=no-probe`. A scheduled job nobody can list is the finding.
 expects: the fallback SSH port, the tailnet daemon, a port an active
 use-case declares, or one in `security_baseline.listeners`.
 
+**Report-only.**
+
 No dialect. `ss -lntupH`, the same read § "Adoption variant" in
 `bootstrap-node/references/hardening-recipes.md` uses. A listener on a
 loopback address is out of scope. One bound to the wildcard address is
@@ -812,6 +832,8 @@ listeners **no** declaration accounts for.
 
 **Goal.** Since the last sweep, nobody got in, or got root, by a path the
 baseline does not expect.
+
+**Report-only.**
 
 **Fact.** The log source is probe-on-demand, not a `system_facts` key.
 Prefer the journal when it is persistent and its oldest entry predates
@@ -890,6 +912,8 @@ journal names the hash and the count of explained and unexplained paths.
 **Goal.** The node carries no compiler or build system. On a box that only
 runs containers, a toolchain mainly serves someone building something the
 admin did not.
+
+**Report-only.**
 
 No dialect: `command -v` over the candidates `cc`, `gcc`, `g++`, `c++`,
 `clang`, `make`, `cmake`, `ld` and `as`. Any hit is DRIFT, reported with its

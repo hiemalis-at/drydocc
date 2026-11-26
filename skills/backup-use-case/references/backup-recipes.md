@@ -85,6 +85,9 @@ exists" and "the last snapshot is good" the same question.
     | sha256sum | awk '{print $1}'
   ```
 - **`images`** — the pinned tag each container was running at capture time.
+  For a container that sets `build`, this is its local
+  `localhost/drydocc/<slug>-<image>:<ctx>` tag, whose `<ctx>` names the
+  build context it ran.
   A restore whose current declaration pins a different tag for any container
   is not refused, but is called out to the admin (a data-format change across
   a major version bump is the classic reason this matters for a database).

@@ -23,15 +23,19 @@ outcome: success
 commit_before: a501e0b
 commit_after: 8f3c9d2
 # mode: rebuild   # present only on apply entries — see Field Descriptions
+# compacted: 2026-11-26   # present only on entries compacted by /compact-journal
 ---
 ```
 
 ### Field Descriptions
 
 - **`timestamp`** — ISO 8601 datetime in UTC (YYYY-MM-DDTHH:MM:SSZ). Marks when the action completed.
-- **`actor`** — String identifying who performed the action. Format:
-  - `claude/<model>` for agent actions (e.g., `claude/opus-4-7`, `claude/haiku-4-5`).
-  - `human` for human-only edits (e.g., manual doc corrections journaled by a skill post-hoc).
+- **`actor`** — String identifying who performed the action. An **open
+  vocabulary** `<harness>/<model>` for agent actions (e.g., `claude/opus-4-7`,
+  `vibe/mistral-large-4`, `pi/claude`) — any harness a live run reports is
+  legal to record, and supporting a new one never requires editing this
+  convention. `human` for human-only edits (e.g., manual doc corrections
+  journaled by a skill post-hoc).
 - **`trigger`** — The slash-command invocation that produced this entry, or the string `manual` if it was a manual edit. Examples:
   - `/create-use-case nextcloud "Nextcloud instance for team docs"`
   - `/bootstrap-node`
@@ -63,11 +67,19 @@ commit_after: 8f3c9d2
   - `failed` — Action did not complete; no changes (or rolled back changes) applied. Always journal failures for debugging.
   - `dry-run` — Action was executed in dry-run mode; no live state changed.
 - **`commit_before`** — Short commit SHA (7–12 chars) of the HEAD before the action. Allows diffing the state before and after.
-- **`commit_after`** — Short commit SHA of the commit that contains the action's changes. Must exist (i.e., the action must commit its changes atomically).
+- **`commit_after`** — Short commit SHA of the commit that contains the
+  action's changes, or `self` — meaning "the commit that introduced this
+  entry", which the entry cannot know at write time because it is committed
+  together with the change. Resolve `self` with
+  `git log --diff-filter=A --format=%h -- <path>`. Either way the action must
+  commit its changes atomically.
 - **`mode`** — Present **only** on `scope: use-case/<slug>` entries written by
   `/apply-use-case`. Enum: `greenfield | adoption | rebuild` — which run mode
   the apply classified into. Omitted by every other
   command.
+- **`compacted`** — Present **only** on entries whose body was compacted by
+  `/compact-journal`: the ISO date (`YYYY-MM-DD`) of that run. Compaction
+  changes no other frontmatter field (§ Compaction).
 
 ## Body Sections
 
@@ -145,9 +157,44 @@ and `/node-maintenance` (`data-recoverable`). The `owes_restore` operation
 (`podman-quadlets` § "The drydocc tools") answers it for one use-case; this
 definition remains the contract.
 
+## Compaction
+
+`/compact-journal` is the **one sanctioned rewrite** of past entries. It shrinks
+verbose bodies so a long journal stays cheap to read, without giving up history
+resolution:
+
+- **Frontmatter is immutable.** Every existing field stays byte-identical; the
+  only addition is `compacted: YYYY-MM-DD`, the date of the compaction run.
+  Filenames never change; entries are never deleted, merged, or reordered.
+- **Bodies keep the canonical sections** (`## What was done`, `## Commands`,
+  `## Notes / drift detected`) and every outcome-critical fact: what changed,
+  failures, drift discovered, deferred work, human interventions, verification
+  verdicts, secret-handling notes, and cross-entry references. Embedded doc
+  diffs and config dumps collapse to a pointer at `commit_after`; routine
+  command transcripts and verbose probe output collapse to their verdict.
+  When in doubt, keep the fact.
+- **Resolution annotations are additive.** Where a later entry verifiably
+  settles an older statement (a deferred item done, a drift repaired), the
+  compacted body may add a line citing the resolving entry by filename. It
+  never asserts live-node state — an unsettled item is reported, not annotated.
+- **History resolution lives in git.** The pre-compaction body stays
+  recoverable with `git log -p -- <path>`; the never-force-push rule below
+  keeps that recovery permanent. Compaction never destroys information — it
+  moves the verbose copy into history.
+- **Eligibility + idempotence.** Only entries whose body exceeds 40 lines are
+  compacted; entries already carrying `compacted:` are skipped untouched.
+- **The run journals itself**: one entry per node, `scope: node`, `trigger:`
+  the invocation as typed (`/compact-journal` on the node,
+  `/compact-journal <node>` on the client), whose Notes carry the run's
+  findings (schema deviations, contradictions, outdated statements and their
+  resolution pointers).
+
 ## Rules
 
-1. **Append-only**: Never rewrite or delete past entries. The journal is an immutable audit log.
+1. **Append-only**: Never rewrite or delete past entries — the one exception is
+   `/compact-journal`'s sanctioned body compaction (§ Compaction), which keeps
+   frontmatter and filenames verbatim and the full original in git history.
+   The journal is an immutable audit log.
 2. **Same commit as the change**: Each action's changes (edits to `.md`, `.yaml`, quadlets, etc.) are committed atomically in the same commit referenced by `commit_after`. This ensures the journal entry and its changes are traceable.
 3. **Always journal, even on failure**: If an action fails partway through (e.g., a skill encounters an error), still write a journal entry with `outcome: failed` and document what partial state was left behind. This aids debugging and recovery. A run whose agent died before it could journal (crash, unreachable server, exhausted credits) is journaled by `/continue-last-command` when the admin abandons it: the dead command's own scope, its original `trigger`, `outcome: failed`.
 4. **Timestamp matches filename**: The `timestamp` field and the filename's `YYYY-MM-DD-HHMM` prefix should agree (or be within a few seconds if the agent and system clocks are slightly skewed).

@@ -76,7 +76,10 @@ machine-readable blocklist, is
 
 Every state-changing action appends an entry under `nodes/<self>/journal/`, in
 the same commit as the change it describes, including when the outcome is
-`failed`. The journal is append-only and never hand-edited. Git history plus
+`failed`. The journal is append-only and never hand-edited — the one
+sanctioned rewrite is `/compact-journal`'s body compaction, which keeps
+frontmatter and filenames verbatim and the full original in git history.
+Git history plus
 the journal is the audit trail; it is also, per the convergence principle, the
 checkpoint a resumed run reads. Invariant 2.
 
@@ -175,8 +178,8 @@ reached.
 
 Each node runs an unprivileged `doccap` user in sudoers; root ssh login and
 password authentication are disabled. Tailscale SSH is the primary access
-path, with bare ssh on `ssh_fallback_port` (default 42022, keyed to `doccap`
-only) as the fallback that survives a broken tailnet. The node's identity is
+path, with bare ssh on `ssh_fallback_port` (keyed to `doccap` only) as the
+fallback that survives a broken tailnet. The node's identity is
 written once to `/etc/drydocc/node-name` by `/bootstrap-node`, and is what
 makes node scoping enforceable rather than advisory. A host firewall and
 fail2ban, plus the locked-down sshd, are the baseline hardening surface;

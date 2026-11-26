@@ -53,12 +53,12 @@ listening port, and every enabled systemd unit the framework doesn't already
 account for.
 
 **Fact.** Every fact above is `unknown` until this probe runs — none is ever
-inferred from `distro`. Three of them (`package_manager`, `mac_framework`,
-`firewall.*`) can have more than one live candidate on a box nobody has
-described yet and need a try-each-in-order loop; the rest are closed enough
+inferred from `distro`. Four of them (`package_manager`, `service_manager`,
+`mac_framework`, `firewall.*`) can have more than one live candidate on a box
+nobody has described yet and need a try-each-in-order loop; the rest are closed enough
 (a capability check, or a plain presence check for the open `capabilities:`
 map) to resolve directly. `$PUBKEY`, `$SSHD_EFFECTIVE_CONFIG_CMD`,
-`$PM_PROBES`, `$MAC_PROBES`, `$FW_PROBES`, and `$INTEGRITY_PROBES` are templates the agent fills
+`$PM_PROBES`, `$SM_PROBES`, `$MAC_PROBES`, `$FW_PROBES`, and `$INTEGRITY_PROBES` are templates the agent fills
 in before sending the session — the candidate-loop ones from § "Observed
 dialects" below (or freshly derived and then appended there), the same way
 `$PUBKEY` is already filled from the admin's pasted key. The probe itself:
@@ -212,14 +212,24 @@ PMPROBE
 
 # Service manager — the one hard capability gate (quadlets are a
 # systemd feature). A live tree is the confirmation, never a distro guess.
+# $SM_PROBES: newline "<value>|<live-cmd>" pairs for non-systemd managers,
+# filled from § "Observed dialects" below; <live-cmd> must prove the manager
+# is in charge of this box, not merely installed.
 if [ -d /run/systemd/system ]; then
   echo service_manager=systemd
-elif command -v rc-status >/dev/null 2>&1; then
-  echo service_manager=openrc
-elif command -v sv >/dev/null 2>&1 && [ -d /etc/runit ]; then
-  echo service_manager=runit
 else
-  echo service_manager=unknown
+  SM_FOUND=""
+  while IFS='|' read -r SM_VAL SM_CMD; do
+    [ -n "$SM_CMD" ] || continue
+    if eval "$SM_CMD" >/dev/null 2>&1; then
+      echo "service_manager=$SM_VAL"
+      SM_FOUND=1
+      break
+    fi
+  done <<SMPROBE
+$SM_PROBES
+SMPROBE
+  [ -n "$SM_FOUND" ] || echo service_manager=unknown
 fi
 
 # MAC framework — enforcing, not merely installed. $MAC_PROBES: newline
@@ -463,7 +473,7 @@ instead of starting from `command -v` again.
 
 #### Observed dialects — evidence, not the supported list
 
-`$PM_PROBES`, `$MAC_PROBES`, and `$FW_PROBES` above are built by joining the
+`$PM_PROBES`, `$SM_PROBES`, `$MAC_PROBES`, and `$FW_PROBES` above are built by joining the
 rows below, one `<field>|<field>|…` line per row. Reuse a row whose
 binary/status command matches the node — after running Verification above,
 never instead of it (Rule 3).
@@ -475,6 +485,14 @@ never instead of it (Rule 3).
 | apt | apt | `test -d /var/lib/dpkg && apt list --installed >/dev/null 2>&1 && echo ok` | this file's earlier single-dialect version |
 | dnf | dnf | `dnf --version 2>/dev/null \| head -1 \| grep -qvi '^Dnf5' && dnf --version >/dev/null 2>&1 && echo ok` | carried from `bootstrap-node/references/hardening-recipes.md`'s package-installation detection — not yet independently confirmed by `/onboard-node` |
 | dnf5 | dnf | `dnf --version 2>/dev/null \| head -1 \| grep -qi '^Dnf5' && echo ok` | carried from `bootstrap-node/references/hardening-recipes.md`'s package-installation detection — not yet independently confirmed by `/onboard-node` |
+
+**`service_manager`** (non-systemd candidates; systemd itself is the structural
+hard gate above, never a table row)
+
+| value | live command | verified on |
+|---|---|---|
+| openrc | `command -v rc-status` | carried from this file's earlier hardcoded probe — not yet confirmed on a live non-systemd box |
+| runit | `command -v sv && test -d /etc/runit` | carried from this file's earlier hardcoded probe — not yet confirmed on a live non-systemd box |
 
 **`mac_framework`**
 
@@ -690,15 +708,15 @@ pattern. This rule is what makes a re-run pick the same slug — which names the
 document, tags the firewall rule the reconcile preserves for it, and keys the
 Phase 5 collision guard.
 
-Each is triaged per `native-services.md` into exactly one outcome:
+Each is triaged per `native-services-recipes.md` into exactly one outcome:
 
 1. **Tier 0, node infrastructure** — journal it as node infrastructure covered
    by `/bootstrap-node`. No document.
-2. **Tier 1, mapped daemon** — emission contract per `native-services.md` §
+2. **Tier 1, mapped daemon** — emission contract per `native-services-recipes.md` §
    Tier 1. This file's own rule on top of that: the resulting document goes
    through the same cluster accept menu as a container cluster — adoption
    doesn't get a separate approval path.
-3. **Tier 2, capture** — emission contract per `native-services.md` § Tier 2;
+3. **Tier 2, capture** — emission contract per `native-services-recipes.md` § Tier 2;
    the refusal condition on its empty `spec:` block is defined in
    `conventions/references/use-case-doc.md`. This file's own rule on top of
    that: it goes through the same cluster accept menu as the two cases above.
@@ -809,7 +827,7 @@ different next steps, and boilerplate written for one is false on the others.
   then the unit keeps running, untouched."`
 
 `## Migration` — emitted for an adopted host-native service (Tier 1 or Tier 2
-per `native-services.md`), and for a container cluster only when the
+per `native-services-recipes.md`), and for a container cluster only when the
 defaults would not find its containers:
 - `owner: <user>` when the containers' owner is not `doccap`;
 - `containers: <spec-key>=<legacy-name>, …` when any spec key differs from

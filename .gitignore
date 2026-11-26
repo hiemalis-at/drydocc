@@ -31,3 +31,6 @@ iso/
 __pycache__/
 *.pyc
 .venv/
+
+# Pi harness local state, never commit
+.pi/

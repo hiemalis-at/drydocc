@@ -72,6 +72,9 @@ metadata:
      `nextcloud-db`).
    - Pinned image tags for each container — ask the admin for the tag
      if the description doesn't specify; `:latest` is a validation error.
+     A container that needs something no published image carries is built
+     on the node instead: `spec.images` plus `build:`, with its Containerfile
+     in a files volume (`podman-quadlets` § "Built images").
    - Likely ports (e.g., "TURN server" → `3478/udp`, `5349/tcp`).
    - Volumes needed and their mount targets in each container.
    - Whether secrets are needed (admin passwords, db passwords).

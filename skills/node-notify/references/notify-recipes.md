@@ -50,6 +50,15 @@ it, and record it below.
 **Verification.** § "Verifying delivery" is the verification: a client that
 cannot get a message to the server and back is not a capability.
 
+**Record.** The verified client in the table below, and the probe's result in
+the node's open `capabilities:` map (`node.yaml:capabilities`).
+
+### Observed dialects — evidence, not the supported list
+
+| capability | client | verified on |
+|---|---|---|
+| HTTPS request with URL and headers from stdin | `curl` (`--config -`) | carried from this file's original single-client version — re-verify per § "Verifying delivery" on each new node |
+
 ---
 
 ## Message content
@@ -140,6 +149,10 @@ confirm a phone showed it; ask.
 next run should have finished. Each successful run pushes it further out. If
 the runs stop, it is delivered.
 
+**Fact.** No dialect of its own: the server and topics come from the merged
+notify manifest and `_notify.env`, the interval from the job's own
+`OnCalendar=` expression. Nothing is inferred from the distro.
+
 **Inputs**, fixed at render time into the job's own script:
 
 - `<job>` — `maintenance`, `telemetry`, `backup-<slug>`, or
@@ -185,6 +198,12 @@ helper):
    **replaces** it.
 5. On 2xx, write the current epoch to `/var/lib/drydocc/notify/armed-<job>`.
    Log the outcome either way.
+
+**Verification.** § "Verifying an armed alarm" is the verification: an alarm
+nobody has seen pending on the server is not armed.
+
+**Record.** The armed-state file `/var/lib/drydocc/notify/armed-<job>` and the
+notify log line; the owning command journals the render.
 
 **Detection latency.** A job that dies right after arming is reported after
 at most interval + grace + `rearm_every`: about 8 h 15 min for a 15-minute

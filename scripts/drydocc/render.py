@@ -84,6 +84,113 @@ def _resource_lines(c: dict) -> list[str]:
     if "cpu_weight" in res:
         lines.append(f"CPUWeight={_esc(int(res['cpu_weight']))}")
     return lines
+# --- local image builds -------------------------------------------------------
+#
+# `spec.images.<name>: {context: <files volume>, file: <relative path>}` declares
+# an image built on the node from a Containerfile kept in the fork. A container
+# uses it with `build: <name>` instead of `image:`. The reproducibility contract
+# moves from the tag to the Containerfile: every FROM pins a digest. The local tag
+# carries a digest of the context tree, so any context change changes the render.
+
+DEFAULT_CONTAINERFILE = "Containerfile"
+_DIGEST_PIN = re.compile(r"@sha256:[0-9a-f]{64}$")
+
+
+def context_digest(root: Path) -> str:
+    """12 hex digits of a sha256 over the tree's sorted relative paths and file bytes."""
+    import hashlib
+
+    root = Path(root)
+    h = hashlib.sha256()
+    for p in sorted(x for x in root.rglob("*") if x.is_file()):
+        rel = p.relative_to(root).as_posix()
+        h.update(rel.encode() + b"\0" + hashlib.sha256(p.read_bytes()).digest())
+    return h.hexdigest()[:12]
+
+
+def from_findings(text: str, where: str) -> list[str]:
+    """Every FROM in a Containerfile that neither pins a digest nor names an earlier stage."""
+    out: list[str] = []
+    stages: set[str] = set()
+    seen = False
+    for raw in text.splitlines():
+        words = raw.split("#", 1)[0].split()
+        if not words:
+            continue
+        if words[0].upper() in ("COPY", "ADD", "RUN"):
+            refs = [w[len("--from="):] for w in words[1:] if w.startswith("--from=")]
+            for w in words[1:]:
+                if w.startswith("--mount="):
+                    refs += [o[len("from="):] for o in w[len("--mount="):].split(",") if o.startswith("from=")]
+            for ref in refs:
+                if not (ref.lower() in stages or ref.isdigit() or ref.lower() == "scratch" or _DIGEST_PIN.search(ref)):
+                    out.append(f"{where}: {words[0].upper()} --from {ref!r} must pin a digest (@sha256:...) or name an earlier stage")
+            continue
+        if words[0].upper() != "FROM":
+            continue
+        seen = True
+        args = [w for w in words[1:] if not w.startswith("--")]
+        if not args:
+            out.append(f"{where}: FROM names no image")
+            continue
+        ref = args[0]
+        pinned = ref.lower() in stages or ref.lower() == "scratch" or _DIGEST_PIN.search(ref)
+        if not pinned:
+            out.append(f"{where}: FROM {ref!r} must pin a digest (@sha256:...)")
+        if len(args) >= 3 and args[1].upper() == "AS":
+            stages.add(args[2].lower())
+    if not seen:
+        out.append(f"{where}: no FROM line")
+    return out
+
+
+def _relative_path_ok(value: str) -> bool:
+    return bool(value) and not value.startswith("/") and ".." not in Path(value).parts
+
+
+def _image_findings(slug: str, spec: dict) -> list[str]:
+    out: list[str] = []
+    volumes = spec.get("volumes") or {}
+    for name, img in (spec.get("images") or {}).items():
+        img = img or {}
+        ctx = img.get("context")
+        if not ctx or (volumes.get(ctx) or {}).get("source") != "files":
+            out.append(f"{slug}/images.{name}: context {ctx!r} must name a files volume (source: files) of this spec")
+        file = img.get("file", DEFAULT_CONTAINERFILE)
+        if not _relative_path_ok(str(file)):
+            out.append(f"{slug}/images.{name}: file {file!r} must be relative with no .. component")
+        mem = img.get("memory")
+        if mem is not None and not re.fullmatch(r"[0-9]+[bkmg]?", str(mem)):
+            out.append(f"{slug}/images.{name}: memory {mem!r} must be a podman size such as 2g or 512m")
+    return out
+
+
+def _network_findings(slug: str, spec: dict) -> list[str]:
+    out: list[str] = []
+    for name, n in (spec.get("networks") or {}).items():
+        iso = (n or {}).get("isolate")
+        if iso is not None and iso not in (True, False, "strict"):
+            out.append(f"{slug}/networks.{name}: isolate must be true, false or strict")
+    return out
+
+
+def render_build(slug: str, name: str, img: dict, ctx: str) -> str:
+    """Render one ``<slug>-<image>.build`` unit; ``ctx`` is the context digest."""
+    root = f"{VOLUME_ROOT}/{slug}/{img['context']}"
+    file = img.get("file", DEFAULT_CONTAINERFILE)
+    lines = [
+        "[Unit]",
+        f"Description={_esc(slug)}/{_esc(name)} image (drydocc)",
+        "",
+        "[Build]",
+        f"ImageTag=localhost/drydocc/{_esc(slug)}-{_esc(name)}:{_esc(ctx)}",
+        f"File={_esc(root)}/{_esc(file)}",
+        f"SetWorkingDirectory={_esc(root)}",
+        "Pull=missing",
+    ]
+    if img.get("memory"):
+        lines.append(f"PodmanArgs=--memory={_esc(img['memory'])}")
+    return "\n".join(lines) + "\n"
 
 
 def _mount_source(slug: str, mount: dict) -> str:
@@ -127,7 +234,61 @@ def _mount_opts(slug: str, mount: dict, spec: dict, relabel: bool) -> str:
     return ",".join(opts)
 
 
-def _container_findings(slug: str, name: str, c: dict, spec: dict) -> list[str]:
+def _from_mount_findings(
+    slug: str, name: str, mount: dict, owners: dict[str, dict] | None
+) -> list[str]:
+    """The rules a ``from:`` mount breaks, reading the owner's declaration.
+
+    A ``from:`` mount names ``<owner-slug>/<volume>`` of another use-case. The
+    owner must declare that volume ``shared: true``, and the mount reads it
+    unless the owner lists this use-case in the volume's ``writers``. That
+    list lives in the owner's document, so ``owners`` maps each sibling
+    use-case slug to its ``spec:``; without it the read-write form cannot be
+    verified and is refused.
+    """
+    where = f"{slug}/{name}"
+    ref = str(mount.get("from", ""))
+    owner, _, vol = ref.partition("/")
+    if not owner or not vol or "/" in vol:
+        return [f"{where}: from {ref!r} must be <owner-slug>/<volume>"]
+    if mount.get("ro"):
+        if owners is None:
+            return []
+        return _shared_volume_findings(where, ref, owner, vol, owners, need_writer=None)
+    if owners is None:
+        return [
+            f"{where}: a from: mount sets ro: true unless {owner} lists this use-case "
+            f"in {vol}'s writers"
+        ]
+    return _shared_volume_findings(where, ref, owner, vol, owners, need_writer=slug)
+
+
+def _shared_volume_findings(
+    where: str, ref: str, owner: str, vol: str, owners: dict[str, dict], need_writer: str | None
+) -> list[str]:
+    """Whether ``owner``/``vol`` is a shared volume, and whether it admits ``need_writer``."""
+    if owner not in owners:
+        return [f"{where}: from {ref!r} names {owner}, which has no use-case doc on this node"]
+    owner_spec = owners.get(owner) or {}
+    vol_def = (owner_spec.get("volumes") or {}).get(vol)
+    if vol_def is None:
+        return [f"{where}: from {ref!r} names {owner}/{vol}, which {owner} does not declare"]
+    if not (vol_def or {}).get("shared"):
+        return [f"{where}: from {ref!r} names {owner}/{vol}, which is not shared: true"]
+    if need_writer is None:
+        return []
+    writers = [str(w) for w in (vol_def or {}).get("writers") or []]
+    if need_writer not in writers:
+        return [
+            f"{where}: a from: mount of {owner}/{vol} sets ro: true "
+            f"(the volume's writers {writers} do not list {need_writer})"
+        ]
+    return []
+
+
+def _container_findings(
+    slug: str, name: str, c: dict, spec: dict, owners: dict[str, dict] | None = None
+) -> list[str]:
     """Every validation rule this container breaks, each naming the key."""
     out: list[str] = []
     networks = spec.get("networks") or {}
@@ -169,17 +330,26 @@ def _container_findings(slug: str, name: str, c: dict, spec: dict) -> list[str]:
             out.append(f"{slug}/{name}: mount volume {m['volume']!r} is not a key of spec.volumes")
         if has_vol and (volumes.get(m["volume"]) or {}).get("source") == "files" and not m.get("ro"):
             out.append(f"{slug}/{name}: a mount of a files volume sets ro: true")
-        if has_from and not m.get("ro"):
-            out.append(f"{slug}/{name}: a from: mount sets ro: true")
+        if has_from:
+            out.extend(_from_mount_findings(slug, name, m, owners))
     if c.get("oneshot"):
         if c.get("restart"):
             out.append(f"{slug}/{name}: a oneshot container sets no restart")
         for other_name, other in containers.items():
             if name != other_name and name in (other.get("depends_on") or []):
                 out.append(f"{slug}/{other_name}: depends_on lists the oneshot container {name!r}")
-    image = str(c.get("image", ""))
-    if not image or ":" not in image or image.endswith(":latest"):
-        out.append(f"{slug}/{name}: image must carry a pinned tag (:latest is a validation error)")
+    has_image, has_build = "image" in c, "build" in c
+    if has_image and has_build:
+        out.append(f"{slug}/{name}: image and build are both set")
+    elif has_build:
+        if c["build"] not in (spec.get("images") or {}):
+            out.append(f"{slug}/{name}: build {c['build']!r} is not a key of spec.images")
+    elif not has_image:
+        out.append(f"{slug}/{name}: sets neither image nor build")
+    if has_image:
+        image = str(c.get("image", ""))
+        if not image or ":" not in image or image.endswith(":latest"):
+            out.append(f"{slug}/{name}: image must carry a pinned tag (:latest is a validation error)")
     res = c.get("resources")
     if res is not None:
         if not isinstance(res, dict):
@@ -216,22 +386,32 @@ def _container_findings(slug: str, name: str, c: dict, spec: dict) -> list[str]:
     return out
 
 
-def _validate_container(slug: str, name: str, c: dict, spec: dict) -> None:
-    findings = _container_findings(slug, name, c, spec)
+def _validate_container(
+    slug: str, name: str, c: dict, spec: dict, owners: dict[str, dict] | None = None
+) -> None:
+    findings = _container_findings(slug, name, c, spec, owners)
     if findings:
         raise SpecError("; ".join(findings))
 
 
-def spec_findings(slug: str, spec: dict) -> list[str]:
-    """Every validation finding across the spec's containers."""
+def spec_findings(slug: str, spec: dict, owners: dict[str, dict] | None = None) -> list[str]:
+    """Every validation finding across the spec's containers.
+
+    ``owners`` maps sibling use-case slugs to their ``spec:``, which the
+    ``from:`` mount rules read (``owner_specs`` builds it from a node's
+    ``use-cases/`` directory). Without it a read-write ``from:`` mount is
+    refused, because nothing can verify the owner's ``writers`` list.
+    """
     out: list[str] = []
     for name, c in (spec.get("containers") or {}).items():
-        out.extend(_container_findings(slug, name, c or {}, spec))
+        out.extend(_container_findings(slug, name, c or {}, spec, owners))
+    out.extend(_image_findings(slug, spec))
+    out.extend(_network_findings(slug, spec))
     return out
 
 
-def _validate(slug: str, spec: dict) -> None:
-    findings = spec_findings(slug, spec)
+def _validate(slug: str, spec: dict, owners: dict[str, dict] | None = None) -> None:
+    findings = spec_findings(slug, spec, owners)
     if findings:
         raise SpecError("; ".join(findings))
 
@@ -253,9 +433,16 @@ def _container_networks(slug: str, c: dict) -> list[str]:
     return nets
 
 
-def render_container(slug: str, name: str, c: dict, spec: dict, relabel: bool = False) -> str:
+def render_container(
+    slug: str,
+    name: str,
+    c: dict,
+    spec: dict,
+    relabel: bool = False,
+    owners: dict[str, dict] | None = None,
+) -> str:
     """Render one ``<slug>-<container>.container`` unit."""
-    _validate_container(slug, name, c, spec)
+    _validate_container(slug, name, c, spec, owners)
     oneshot = bool(c.get("oneshot"))
     nets = _container_networks(slug, c)
     deps = [f"{slug}-{d}.service" for d in c.get("depends_on") or []]
@@ -270,7 +457,10 @@ def render_container(slug: str, name: str, c: dict, spec: dict, relabel: bool = 
         lines.append(f"Requires={after}")
     lines.append("")
     lines.append("[Container]")
-    lines.append(f"Image={_esc(c['image'])}")
+    if "build" in c:
+        lines.append(f"Image={_esc(slug)}-{_esc(c['build'])}.build")
+    else:
+        lines.append(f"Image={_esc(c['image'])}")
     lines.append(f"ContainerName={_esc(slug)}-{_esc(name)}")
     if nets:
         for n in nets:
@@ -346,25 +536,73 @@ def render_network(slug: str, name: str, n: dict) -> str:
         lines.append("Internal=true")
     if n.get("subnet"):
         lines.append(f"Subnet={_esc(n['subnet'])}")
+    if n.get("isolate"):
+        lines.append(f"Options=isolate={'strict' if n['isolate'] == 'strict' else 'true'}")
     lines.append("")
     lines.append("[Install]")
     lines.append("WantedBy=default.target")
     return "\n".join(lines) + "\n"
 
 
-def render_spec(spec: dict, slug: str, relabel: bool = False) -> dict[str, str]:
+def render_spec(
+    spec: dict,
+    slug: str,
+    relabel: bool = False,
+    contexts: dict[str, str] | None = None,
+    owners: dict[str, dict] | None = None,
+) -> dict[str, str]:
     """Render a whole ``spec:`` block to ``{filename: ini-text}``.
 
-    Filenames are ``<slug>-<container>.container`` and
-    ``<slug>-<network>.network``. ``.volume`` units are never emitted.
+    Filenames are ``<slug>-<container>.container``, ``<slug>-<network>.network``
+    and ``<slug>-<image>.build``. ``.volume`` units are never emitted.
+    ``contexts`` maps each ``spec.images`` key to its context digest
+    (``context_digest``); ``render_document`` computes it from the fork tree.
+    ``owners`` maps sibling use-case slugs to their ``spec:``, for the
+    ``from:`` mount rules (``owner_specs``); ``render_document`` loads it.
     """
-    _validate(slug, spec)
+    _validate(slug, spec, owners)
+    contexts = contexts or {}
     out: dict[str, str] = {}
+    for name, img in (spec.get("images") or {}).items():
+        if name not in contexts:
+            raise SpecError(f"{slug}/images.{name}: no context digest for image {name!r}")
+        out[f"{slug}-{name}.build"] = render_build(slug, name, img or {}, contexts[name])
     for name, n in (spec.get("networks") or {}).items():
         out[f"{slug}-{name}.network"] = render_network(slug, name, n or {})
     for name, c in (spec.get("containers") or {}).items():
-        out[f"{slug}-{name}.container"] = render_container(slug, name, c or {}, spec, relabel)
+        out[f"{slug}-{name}.container"] = render_container(slug, name, c or {}, spec, relabel, owners)
     return out
+
+
+def owner_specs(path: str | Path) -> dict[str, dict]:
+    """Every sibling use-case's ``spec:``, keyed by slug, for the ``from:`` rules.
+
+    Reads the ``*.md`` documents next to ``path`` (a node's ``use-cases/``
+    directory), skipping ``_retired/`` and the document itself. A sibling that
+    will not parse is left out, so a mount naming it reports the missing
+    declaration rather than hiding behind a traceback.
+    """
+    p = Path(path)
+    own = p.stem
+    out: dict[str, dict] = {}
+    for sib in sorted(p.parent.glob("*.md")):
+        if sib.name == p.name:
+            continue
+        try:
+            fm = doc_mod.load(sib)
+        except (OSError, doc_mod.DocError):
+            continue
+        spec = fm.get("spec")
+        if isinstance(spec, dict):
+            out[str(fm.get("name") or sib.stem)] = spec
+    out.pop(own, None)
+    return out
+
+
+def _context_dirs(path: Path, slug: str, spec: dict) -> dict[str, Path]:
+    """Each image's build context in the fork: ``<doc dir>/<slug>.files/<context>/``."""
+    base = Path(path).parent / f"{slug}.files"
+    return {name: base / str((img or {}).get("context")) for name, img in (spec.get("images") or {}).items()}
 
 
 def render_document(path: str | Path, relabel: bool = False) -> dict[str, str]:
@@ -374,7 +612,12 @@ def render_document(path: str | Path, relabel: bool = False) -> dict[str, str]:
     if not isinstance(spec, dict):
         raise doc_mod.DocError(f"{path}: frontmatter has no spec: mapping")
     slug = str(fm.get("name") or Path(path).stem)
-    return render_spec(spec, slug, relabel)
+    contexts = {}
+    for name, d in _context_dirs(Path(path), slug, spec).items():
+        if not d.is_dir():
+            raise SpecError(f"{slug}/images.{name}: build context {d} does not exist in the fork")
+        contexts[name] = context_digest(d)
+    return render_spec(spec, slug, relabel, contexts, owner_specs(path))
 
 
 def validate_document(path: str | Path) -> list[str]:
@@ -395,14 +638,28 @@ def validate_document(path: str | Path) -> list[str]:
     spec = fm.get("spec") or {}
     if not isinstance(spec, dict):
         return [f"INVALID: frontmatter spec: is not a mapping"]
-    for list_key, spec_key in (("containers", "containers"), ("networks", "networks"), ("volumes", "volumes")):
+    pairs = [("containers", "containers"), ("networks", "networks"), ("volumes", "volumes")]
+    if "images" in fm or spec.get("images"):
+        pairs.append(("images", "images"))
+    for list_key, spec_key in pairs:
         summary = fm.get(list_key) or []
         spec_names = set(spec.get(spec_key) or {})
         if set(summary) != spec_names:
             findings.append(
                 f"{slug}: top-level {list_key} {sorted(summary)} != spec.{spec_key} keys {sorted(spec_names)}"
             )
-    findings.extend(spec_findings(slug, spec))
+    findings.extend(spec_findings(slug, spec, owner_specs(p)))
+    for name, ctx_dir in _context_dirs(p, slug, spec).items():
+        img = (spec.get("images") or {}).get(name) or {}
+        file = str(img.get("file", DEFAULT_CONTAINERFILE))
+        if not _relative_path_ok(file):
+            continue  # already reported by spec_findings
+        cf = ctx_dir / file
+        rel = f"{slug}.files/{img.get('context')}/{file}"
+        if not cf.is_file():
+            findings.append(f"{slug}/images.{name}: {rel} (the Containerfile) does not exist in the fork")
+            continue
+        findings.extend(f"{slug}/images.{name}: {f}" for f in from_findings(cf.read_text(encoding="utf-8"), rel))
     return findings
 
 
